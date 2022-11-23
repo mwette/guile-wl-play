@@ -1,0 +1,206 @@
+#!/bin/bash
+# -*- scheme -*-
+# wl07 - roll in fibers ???
+
+LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH
+
+GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
+export GUILE_LOAD_PATH
+
+exec guile $0
+!#
+
+(use-modules (rnrs bytevectors))
+(use-modules (system foreign))
+(use-modules (ice-9 binary-ports))
+
+(use-modules (wl-client))
+(use-modules (sockmsg))
+
+(use-modules (ice-9 pretty-print))
+(define (sf fmt . args) (apply simple-format #t fmt args))
+(define pp pretty-print)
+
+(define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
+(define (pperr exp) (pretty-print exp (current-error-port)))
+
+;; ============================================================================
+
+(define sys-sleep sleep)
+
+(use-modules ((fibers) #:renamer (lambda (s) (if (eq? s 'sleep) 'fsleep s))))
+(use-modules (fibers scheduler))
+(use-modules (fibers conditions))
+(use-modules (ice-9 readline))
+(use-modules (ice-9 top-repl))
+(use-modules (system repl server))
+
+
+;; ============================================================================
+
+;; per-interface vectors of handlers by opcode
+(define wl-handler-vec-vec (make-wl-handler-vec-vec))
+
+;; number of objects 
+(define user-obj-count (make-parameter 0))
+(define (incr-obj-count) (user-obj-count (1+ (user-obj-count))))
+
+;; vector of object-id => ref into wl-handler-vec (handler by opcode)
+(define object-decoders-vec (make-vector 1000))
+
+;; vector of object-id => ref into wl-handler-vec (handler by opcode)
+(define object-handlers-vec (make-vector 1000))
+
+;; vector of objec-id => user-defined value
+(define object-value-vec (make-vector 1000))
+
+;; set-event-handler 'wl_displaly 'get_registry proc => prev-proc
+(define (set-event-handler interface event proc)
+  (let* ((if-indx (assq-ref wayland-index-dict interface))
+         (opcode (assq-ref (vector-ref wayland-opcode-dict-vec if-indx) event))
+         (if-handlers (vector-ref wl-handler-vec-vec if-indx))
+         (evt-handler (vector-ref if-handlers opcode)))
+    (vector-set! if-handlers opcode proc)
+    evt-handler))
+
+(define (dispatch obj-id opcode bv ix cm)
+  (let* ((decoder (vector-ref (vector-ref object-decoders-vec obj-id) opcode))
+         (handler (vector-ref (vector-ref object-handlers-vec obj-id) opcode)))
+    (call-with-values
+        (lambda () (decoder obj-id bv ix cm))
+      handler)))
+
+;; ============================================================================
+
+(define null-id 0)
+(define display-id 1)
+(define registry-id 2)
+
+(define wl-sock #f)
+(define rq-iobuf #f)
+(define ev-iobuf #f)
+
+(define (get-registry)
+  ;; request: wl_display:get_registry 2
+  (call-with-values
+      (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))
+    (lambda (ln cm)
+      (sendmsg wl-sock rq-iobuf 0 ln cm))))
+  
+;; wl_display:error
+(define (handle-error obj-id code message)
+  (sf "error: ~S\n" message))
+
+;; wl_display:delete_id
+(define (handle-delete_id obj-id id)
+  (sf "delete-id: ~S\n" id))
+
+(define (handle-global obj-id name interface version)
+  ;; uint string uint
+  (sf "global: ~A\t~A\n" name interface)
+  #f)
+
+;; =============================================================================
+
+(define socket-path
+  (let ((dir (getenv "XDG_RUNTIME_DIR"))
+	(dpy (getenv "WAYLAND_DISPLAY")))
+    (and dir dpy (string-append dir "/" dpy))))
+
+(define (connect-display)
+  (let* ((path socket-path)
+         (style (logior SOCK_STREAM SOCK_CLOEXEC))
+         (sock (socket PF_UNIX style 0))
+         (conn (connect sock AF_UNIX path))
+         (iobuf (make-bytevector 72)))
+    (setvbuf sock 'none)
+    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
+    (set! rq-iobuf (make-bytevector 1024))
+    (set! ev-iobuf (make-bytevector 1024))
+    sock))
+
+(define (install-handlers)
+  (set-event-handler 'wl_display 'error handle-error)
+  (set-event-handler 'wl_display 'delete_id handle-delete_id)
+  (set-event-handler 'wl_registry 'global handle-global)
+  
+  ;; display
+  (set! display-id 1)
+  (let* ((ob-indx display-id)
+         (if-indx (assq-ref wayland-index-dict 'wl_display))
+         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
+         (if-handlers (vector-ref wl-handler-vec-vec if-indx)))
+    (vector-set! object-decoders-vec ob-indx if-decoders)
+    (vector-set! object-handlers-vec ob-indx if-handlers))
+
+  ;; registry object
+  (set! registry-id 2)
+  (let* ((ob-indx registry-id)
+         (if-indx (assq-ref wayland-index-dict 'wl_registry))
+         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
+         (if-handlers (vector-ref wl-handler-vec-vec if-indx)))
+    (vector-set! object-decoders-vec ob-indx if-decoders)
+    (vector-set! object-handlers-vec ob-indx if-handlers))
+  
+  (user-obj-count 3))
+
+(define (receiver)
+  (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
+    (cond
+     ((< n-have msg-size)
+      (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
+             (n-read (vector-ref res 0))
+             (control (or control (vector-ref res 1)))
+             (flags (vector-ref res 2)))
+        (if (zero? n-read) (yield-current-task))
+        (loop (+ n-have n-read) object-id msg-size opcode control)))
+     ((not object-id)
+      (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
+             (word1 (bytevector-u32-native-ref ev-iobuf 4))
+             (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
+             (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
+        (loop n-have object-id msg-size opcode control)))
+     (else
+      (dispatch object-id opcode ev-iobuf 8 control)
+      (if (> n-have msg-size)
+          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
+      (loop (- n-have msg-size) #f 8 opcode control)))))
+
+(define done-cond #f)
+
+(define (done) (and done-cond (signal-condition! done-cond)))
+
+(run-fibers
+ (lambda ()
+   (set! wl-sock (connect-display))
+   (set! done-cond (make-condition))
+   (install-handlers)
+   (schedule-task-when-fd-readable
+    (current-scheduler) (port->fdes wl-sock) receiver)
+   (fsleep 1)
+   ;;(get-registry)
+   (let ((sock (make-tcp-server-socket)))
+     (setvbuf sock 'none)
+     (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
+     (schedule-task-when-fd-readable
+      (current-scheduler) (port->fdes sock)
+      (lambda ()
+        (add-hook! before-read-hook (lambda () (fsleep 0)))
+        ;;(add-hook! exit-hook quit)
+        (run-server sock))))
+   (wait done-cond)
+   (close-port wl-sock))
+ #:hz 0
+ #:install-suspendable-ports? #f)
+
+;;(connect-display)
+;;(install-handlers)
+;;(main-thunk)
+
+;;(run-server)
+
+#;(let ((ssock (make-tcp-server-socket)))
+  (run-server ssock))
+
+;; --- last line ---
