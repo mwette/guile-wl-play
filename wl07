@@ -32,8 +32,10 @@ exec guile $0
 (use-modules ((fibers) #:renamer (lambda (s) (if (eq? s 'sleep) 'fsleep s))))
 (use-modules (fibers scheduler))
 (use-modules (fibers conditions))
-(use-modules (ice-9 readline))
-(use-modules (ice-9 top-repl))
+(use-modules (fibers channels))
+
+;;(use-modules (ice-9 readline))
+;;(use-modules (ice-9 top-repl))
 (use-modules (system repl server))
 
 
@@ -44,7 +46,13 @@ exec guile $0
 
 ;; number of objects 
 (define user-obj-count (make-parameter 0))
-(define (incr-obj-count) (user-obj-count (1+ (user-obj-count))))
+(define (obj-count++)
+  (let ((count (user-obj-count)))
+    (user-obj-count (1+ count))
+    count))
+
+;; name -> id
+(define object-dict (make-hash-table 97))
 
 ;; vector of object-id => ref into wl-handler-vec (handler by opcode)
 (define object-decoders-vec (make-vector 1000))
@@ -71,7 +79,8 @@ exec guile $0
         (lambda () (decoder obj-id bv ix cm))
       handler)))
 
-;; ============================================================================
+(define done-cond #f)
+(define rq-chan #f)                     ; channel for issuing requests
 
 (define null-id 0)
 (define display-id 1)
@@ -81,12 +90,16 @@ exec guile $0
 (define rq-iobuf #f)
 (define ev-iobuf #f)
 
-(define (get-registry)
+(define (old-get-registry)
   ;; request: wl_display:get_registry 2
   (call-with-values
       (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))
     (lambda (ln cm)
       (sendmsg wl-sock rq-iobuf 0 ln cm))))
+  
+(define (new-get-registry)
+  (put-message rq-chan
+    (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))))
   
 ;; wl_display:error
 (define (handle-error obj-id code message)
@@ -98,8 +111,18 @@ exec guile $0
 
 (define (handle-global obj-id name interface version)
   ;; uint string uint
-  (sf "global: ~A\t~A\n" name interface)
-  #f)
+  (let* ((my-id (obj-count++))
+         (my-sy (string->symbol interface)))
+    (hashq-set! object-dict my-sy my-id)
+    (sf "bind: ~A\t~A (~A)\n" my-sy my-id name)
+    (put-message rq-chan
+      (lambda ()
+        (encode-wl_registry:bind registry-id rq-iobuf 0 name my-id)))))
+
+;; TODO
+;;   add a layer somehow to callers don't need to pass rq-iobuf 0
+;;   need a way to blcok the sender until a number of messages have
+;;   built up
 
 ;; =============================================================================
 
@@ -145,6 +168,24 @@ exec guile $0
   
   (user-obj-count 3))
 
+(define (sender)
+  (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
+    (cond
+     ((positive? n-left)
+      (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
+        (if (= n n-left)
+            (loop 0 0 #f rqq)
+            (loop (+ n-sent n) (- n-left n) #f rqq))))
+     ((pair? rqq)
+      (call-with-values (car rqq) 
+        (lambda (ln cm)
+          (loop 0 ln cm (cdr rqq)))))
+     ((get-message rq-chan) =>
+      (lambda (req)
+        (loop n-sent n-left cm (cons req rqq))))
+     (else
+      (sferr "error\n")))))
+
 (define (receiver)
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
     (cond
@@ -167,28 +208,38 @@ exec guile $0
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
       (loop (- n-have msg-size) #f 8 opcode control)))))
 
-(define done-cond #f)
-
 (define (done) (and done-cond (signal-condition! done-cond)))
+
+(define mn-sock #f)
+
+(define (setup-monitor)
+  (let ((sock (make-tcp-server-socket)))
+    (setvbuf sock 'none)
+    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
+    (add-hook! before-read-hook (lambda () (fsleep 0)))
+    sock))
+
+(define (monitor)
+  (run-server mn-sock))
 
 (run-fibers
  (lambda ()
    (set! wl-sock (connect-display))
    (set! done-cond (make-condition))
+   (set! rq-chan (make-channel))
+   (set! mn-sock (setup-monitor))
    (install-handlers)
+   ;;
+   (spawn-fiber sender)
+   (fsleep 1)
    (schedule-task-when-fd-readable
     (current-scheduler) (port->fdes wl-sock) receiver)
-   (fsleep 1)
-   ;;(get-registry)
-   (let ((sock (make-tcp-server-socket)))
-     (setvbuf sock 'none)
-     (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
-     (schedule-task-when-fd-readable
-      (current-scheduler) (port->fdes sock)
-      (lambda ()
-        (add-hook! before-read-hook (lambda () (fsleep 0)))
-        ;;(add-hook! exit-hook quit)
-        (run-server sock))))
+   #|
+   |#
+   (new-get-registry)
+   #;(schedule-task-when-fd-readable
+      (current-scheduler) (port->fdes mn-sock) monitor)
+   ;;
    (wait done-cond)
    (close-port wl-sock))
  #:hz 0
