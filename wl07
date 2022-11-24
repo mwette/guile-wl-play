@@ -13,7 +13,7 @@ exec guile $0
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
-(use-modules (ice-9 binary-ports))
+(use-modules (ice-9 atomic))
 
 (use-modules (wl-client))
 (use-modules (sockmsg))
@@ -38,6 +38,13 @@ exec guile $0
 ;;(use-modules (ice-9 top-repl))
 (use-modules (system repl server))
 
+(define (make-counter init)
+  (let ((box (make-atomic-box init)))
+    (case-lambda
+      (() (let loop ((exp (atomic-box-ref box)))
+            (let* ((cur (atomic-box-compare-and-swap! box exp (1+ exp))))
+              (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
+      ((val) (atomic-box-set! box val)))))
 
 ;; ============================================================================
 
@@ -45,11 +52,9 @@ exec guile $0
 (define wl-handler-vec-vec (make-wl-handler-vec-vec))
 
 ;; number of objects 
-(define user-obj-count (make-parameter 0))
-(define (obj-count++)
-  (let ((count (user-obj-count)))
-    (user-obj-count (1+ count))
-    count))
+;;(define *obj-count* (make-parameter 0))
+(define *obj-count* (make-counter 0))
+(define (obj-count++) (*obj-count*))
 
 ;; name -> id
 (define object-dict (make-hash-table 97))
@@ -166,7 +171,7 @@ exec guile $0
     (vector-set! object-decoders-vec ob-indx if-decoders)
     (vector-set! object-handlers-vec ob-indx if-handlers))
   
-  (user-obj-count 3))
+  (*obj-count* 3))
 
 (define (sender)
   (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
@@ -224,9 +229,9 @@ exec guile $0
 
 (run-fibers
  (lambda ()
-   (set! wl-sock (connect-display))
    (set! done-cond (make-condition))
    (set! rq-chan (make-channel))
+   (set! wl-sock (connect-display))
    (set! mn-sock (setup-monitor))
    (install-handlers)
    ;;
@@ -240,18 +245,37 @@ exec guile $0
    #;(schedule-task-when-fd-readable
       (current-scheduler) (port->fdes mn-sock) monitor)
    ;;
+   (fsleep 30)
    (wait done-cond)
    (close-port wl-sock))
  #:hz 0
  #:install-suspendable-ports? #f)
 
-;;(connect-display)
-;;(install-handlers)
-;;(main-thunk)
-
-;;(run-server)
-
-#;(let ((ssock (make-tcp-server-socket)))
-  (run-server ssock))
-
 ;; --- last line ---
+#|
+global: 1	wl_compositor
+global: 2	wl_drm
+global: 3	wl_shm
+global: 4	wl_output
+global: 5	zxdg_output_manager_v1
+global: 6	wl_data_device_manager
+global: 7	zwp_primary_selection_device_manager_v1
+global: 8	gtk_primary_selection_device_manager
+global: 9	wl_subcompositor
+global: 10	xdg_wm_base
+global: 11	zxdg_shell_v6
+global: 12	gtk_shell1
+global: 13	wp_viewporter
+global: 14	zwp_pointer_gestures_v1
+global: 15	zwp_tablet_manager_v2
+global: 16	wl_seat
+global: 17	zwp_relative_pointer_manager_v1
+global: 18	zwp_pointer_constraints_v1
+global: 19	zxdg_exporter_v1
+global: 20	zxdg_importer_v1
+global: 21	zwp_linux_dmabuf_v1
+global: 22	zwp_keyboard_shortcuts_inhibit_manager_v1
+global: 23	zwp_text_input_manager_v3
+global: 24	wp_presentation
+global: 25	xdg_activation_v1
+|#
