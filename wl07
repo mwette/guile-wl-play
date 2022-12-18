@@ -8,6 +8,7 @@ export LD_LIBRARY_PATH
 GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
 export GUILE_LOAD_PATH
 
+#exec gdb --args guile $0
 exec guile $0
 !#
 
@@ -94,6 +95,7 @@ exec guile $0
 (define wl-sock #f)
 (define rq-iobuf #f)
 (define ev-iobuf #f)
+(define io-tok #f)
 
 (define (old-get-registry)
   ;; request: wl_display:get_registry 2
@@ -103,12 +105,13 @@ exec guile $0
       (sendmsg wl-sock rq-iobuf 0 ln cm))))
   
 (define (new-get-registry)
+  (sferr "new-get-registry called\n")
   (put-message rq-chan
     (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))))
   
 ;; wl_display:error
-(define (handle-error obj-id code message)
-  (sf "error: ~S\n" message))
+(define (handle-error obj-id object_id code message)
+  (sferr "display-error: ~S\n" message))
 
 ;; wl_display:delete_id
 (define (handle-delete_id obj-id id)
@@ -126,10 +129,12 @@ exec guile $0
 
 ;; TODO
 ;;   add a layer somehow to callers don't need to pass rq-iobuf 0
-;;   need a way to blcok the sender until a number of messages have
+;;   need a way to block the sender until a number of messages have
 ;;   built up
 
 ;; =============================================================================
+
+
 
 (define socket-path
   (let ((dir (getenv "XDG_RUNTIME_DIR"))
@@ -140,9 +145,8 @@ exec guile $0
   (let* ((path socket-path)
          (style (logior SOCK_STREAM SOCK_CLOEXEC))
          (sock (socket PF_UNIX style 0))
-         (conn (connect sock AF_UNIX path))
-         (iobuf (make-bytevector 72)))
-    (setvbuf sock 'none)
+         (conn (connect sock AF_UNIX path)))
+    ;;(setvbuf sock 'none)
     (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
     (set! rq-iobuf (make-bytevector 1024))
     (set! ev-iobuf (make-bytevector 1024))
@@ -173,45 +177,119 @@ exec guile $0
   
   (*obj-count* 3))
 
+;; https://github.com/wingo/fibers/blob/master/fibers.scm#L61
+;;(define wait-for-readable (@@ (fibers) wait-for-readable))
+
+
 (define (sender)
-  (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
+  (sferr "sender starts\n")
+  (let loop ((tok #t) (n-sent 0) (n-left 0) (cm #f) (rqq '()))
     (cond
      ((positive? n-left)
-      (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
-        (if (= n n-left)
-            (loop 0 0 #f rqq)
-            (loop (+ n-sent n) (- n-left n) #f rqq))))
+      (sferr "send message @~S\n" n-sent)
+      (if tok
+          (catch 'system-error
+            (lambda ()
+              (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
+                (sferr "  n=~S/~S\n" n n-left)
+                (force-output wl-sock)
+                (if (= n n-left)
+                    (loop #f 0 0 #f rqq)
+                    (loop #t (+ n-sent n) (- n-left n) #f rqq)))
+              )
+            (lambda (key . args)
+              (sferr "SEND ERROR\n")
+              ))
+          (loop tok 0 0 #f rqq))
+      )
      ((pair? rqq)
+      ;;(fsleep 1)
       (call-with-values (car rqq) 
         (lambda (ln cm)
-          (loop 0 ln cm (cdr rqq)))))
+          (loop tok 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
-        (loop n-sent n-left cm (cons req rqq))))
+        (sferr "queue message\n")
+        (loop tok n-sent n-left cm (cons req rqq))))
      (else
       (sferr "error\n")))))
 
 (define (receiver)
-  (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
+  (let loop ((tok #f) (n-have 0) (object-id #f) (msg-size 8)
+             (opcode #f) (control #f))
+    ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
+     ;;((not tok) (
      ((< n-have msg-size)
+      ;;(wait-for-readable wl-sock)
+      (catch 'system-error
+        (lambda ()
       (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
              (n-read (vector-ref res 0))
              (control (or control (vector-ref res 1)))
              (flags (vector-ref res 2)))
-        (if (zero? n-read) (yield-current-task))
-        (loop (+ n-have n-read) object-id msg-size opcode control)))
+        ;;(sferr "recv message n-read=~S\n" n-read)
+        (when (zero? n-read)
+          ;;(signal-condition! clear-to-send)
+          ;;(sferr "receiver yields\n")
+          (yield-current-task)
+          ;;(sferr "receiver returns\n")
+          ;;(fsleep 1)
+          )
+        (loop tok (+ n-have n-read) object-id msg-size opcode control)))
+        (lambda (key . args)
+          (sferr "RECV ERROR\n")))
+      )
      ((not object-id)
+      ;;(sferr "receiver: not object-id\n")
       (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
              (word1 (bytevector-u32-native-ref ev-iobuf 4))
              (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
              (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
-        (loop n-have object-id msg-size opcode control)))
+        (loop tok n-have object-id msg-size opcode control)))
      (else
+      (sferr "receiver: dispatch ~S ~S\n" object-id opcode)
       (dispatch object-id opcode ev-iobuf 8 control)
       (if (> n-have msg-size)
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
-      (loop (- n-have msg-size) #f 8 opcode control)))))
+      (loop tok (- n-have msg-size) #f 8 opcode control)))))
+
+(define (hub)
+  (let loop ((tok #f) (n-have 0) (object-id #f) (msg-size 8)
+             (opcode #f) (control #f))
+    ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
+    (cond
+     ;;((not tok) (
+     ((< n-have msg-size)
+      ;;(wait-for-readable wl-sock)
+      (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
+             (n-read (vector-ref res 0))
+             (control (or control (vector-ref res 1)))
+             (flags (vector-ref res 2)))
+        ;;(sferr "recv message n-read=~S\n" n-read)
+        (when (zero? n-read)
+          ;;(signal-condition! clear-to-send)
+          ;;(sferr "receiver yields\n")
+          (yield-current-task)
+          ;;(sferr "receiver returns\n")
+          ;;(fsleep 1)
+          )
+        (loop tok (+ n-have n-read) object-id msg-size opcode control)))
+     ((not object-id)
+      ;;(sferr "receiver: not object-id\n")
+      (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
+             (word1 (bytevector-u32-native-ref ev-iobuf 4))
+             (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
+             (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
+        (loop tok n-have object-id msg-size opcode control)))
+     (else
+      (sferr "receiver: dispatch ~S ~S\n" object-id opcode)
+      (dispatch object-id opcode ev-iobuf 8 control)
+      (if (> n-have msg-size)
+          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
+      (loop tok (- n-have msg-size) #f 8 opcode control)))))
+
+;; === monitor ================================================================
 
 (define (done) (and done-cond (signal-condition! done-cond)))
 
@@ -219,9 +297,15 @@ exec guile $0
 
 (define (setup-monitor)
   (let ((sock (make-tcp-server-socket)))
-    (setvbuf sock 'none)
+    ;;(setvbuf sock 'none)
     (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
-    (add-hook! before-read-hook (lambda () (fsleep 0)))
+    ;;(add-hook! before-read-hook (lambda () (wait-for-readable sock)))
+    (add-hook! before-read-hook
+               (lambda ()
+                 (sferr "monitor sleeps\n")
+                 (fsleep 1)
+                 (sferr "monitor returns\n")
+                 ))
     sock))
 
 (define (monitor)
@@ -230,6 +314,7 @@ exec guile $0
 (run-fibers
  (lambda ()
    (set! done-cond (make-condition))
+   (set! io-tok (make-condition))
    (set! rq-chan (make-channel))
    (set! wl-sock (connect-display))
    (set! mn-sock (setup-monitor))
@@ -237,19 +322,24 @@ exec guile $0
    ;;
    (spawn-fiber sender)
    (fsleep 1)
-   (schedule-task-when-fd-readable
+   (spawn-fiber receiver)
+   #;(schedule-task-when-fd-readable
     (current-scheduler) (port->fdes wl-sock) receiver)
    #|
    |#
-   (new-get-registry)
+   ;;(new-get-registry)
+   (old-get-registry)
+   ;;(spawn-fiber monitor #:scheduler (make-scheduler))
    #;(schedule-task-when-fd-readable
-      (current-scheduler) (port->fdes mn-sock) monitor)
+    (current-scheduler) (port->fdes mn-sock) monitor)
    ;;
-   (fsleep 30)
+   (fsleep 120)
    (wait done-cond)
    (close-port wl-sock))
+ ;;#:scheduler (make-scheduler #:parallelism 2)
  #:hz 0
- #:install-suspendable-ports? #f)
+ ;;#:parallelism 2
+ #:install-suspendable-ports? #t)
 
 ;; --- last line ---
 #|

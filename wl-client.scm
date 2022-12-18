@@ -14,6 +14,7 @@
 (use-modules (system foreign))
 
 (define (sf fmt . args) (apply simple-format #t fmt args))
+(define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 (use-modules (ice-9 pretty-print))
 (define pp pretty-print)
 
