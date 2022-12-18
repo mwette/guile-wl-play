@@ -20,17 +20,22 @@
 
 (use-modules (ice-9 format))
 
-(define-public (fmtbv/x bv st ct)
+(define* (fmtbv/x bv st ct #:optional (sc 1))
   (let ((p (open-output-string)))
     (let loop ((ix st) (ct ct))
       (cond
        ((zero? ct) (get-output-string p))
        ((zero? (remainder ix 4))
-        (format p " ~2,'0x" (bytevector-u8-ref bv ix))
+        (if (zero? (remainder ix sc))
+            (format p " ~2,'0x" (bytevector-u8-ref bv ix))
+            (format p "~2,'0x" (bytevector-u8-ref bv ix)))
         (loop (1+ ix) (1- ct)))
        (else
-        (format p " ~2,'0x" (bytevector-u8-ref bv ix))
+        (if (zero? (remainder ix sc))
+            (format p " ~2,'0x" (bytevector-u8-ref bv ix))
+            (format p "~2,'0x" (bytevector-u8-ref bv ix)))
         (loop (1+ ix) (1- ct)))))))
+(export fmtbv/x)
 
 (define endness (native-endianness))
 (define sizeof-int (sizeof int))
@@ -74,9 +79,11 @@
   (values (bytevector-s32-native-ref bv ix) (+ ix 4)))
 
 (define (enc-string bv ix str) ;; => ix
-  (let* ((ln (string-length str)))
+  (let* ((ln (1+ (string-length str)))
+         (ln-1 (1- ln)))
     (bytevector-u32-native-set! bv ix ln)
-    (bytevector-copy! (string->utf8 str) 0 bv (+ ix 4) ln)
+    (bytevector-copy! (string->utf8 str) 0 bv (+ ix 4) ln-1)
+    (bytevector-u8-set! bv (+ ix 4 ln) 0)
     (* (quotient (+ ix 4 ln 3) 4) 4)))
 
 (define (dec-string bv ix) ;; => values str ix
