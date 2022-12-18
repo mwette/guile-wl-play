@@ -35,13 +35,13 @@
         (values msg-size control)))))
 
 (define-public encode-wl_registry:bind
-  (lambda (obj-id bv ix name id)
-    (sferr "encode bind: name=~S id=~S\n" name id)
+  (lambda (obj-id bv ix name interface version id)
     (define (encode-body)
       (bytevector-u32-native-set! bv (+ ix 8) name)
-      (bytevector-u32-native-set! bv (+ ix 12) id)
-      (sferr "bind enc: ~A\n" (fmtbv/x bv (+ ix 8) 8)) ;; SHOW IT
-      (values (+ ix 16) #f))
+      (let ((ix (enc-string bv (+ ix 12) interface)))
+        (bytevector-u32-native-set! bv (+ ix 0) version)
+        (bytevector-u32-native-set! bv (+ ix 4) id)
+        (values (+ ix 8) #f)))
     (call-with-values
       encode-body
       (lambda (msg-size control)
