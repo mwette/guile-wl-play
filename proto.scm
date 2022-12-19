@@ -10,16 +10,25 @@ fixed: 24.8 bit signed fixed-point numbers.
 object: 32-bit object ID.
 
 new_id: 32-bit object ID which allocates that object when received.
+    OR string, uint, uint (interface, version, new id)
 
 In addition to these primitives, the following other types are used:
 
-string: A string, prefixed with a 32-bit integer specifying its length (in bytes), followed by the string contents and a NUL terminator, padded to 32 bits with undefined data. The encoding is not specified, but in practice UTF-8 is used.
+string: A string, prefixed with a 32-bit integer specifying its length
+    (in bytes, including null terminator), followed by the string contents
+    and a NUL terminator, padded to 32 bits with undefined data. The 
+    encoding is not specified, but in practice UTF-8 is used. 
 
-array: A blob of arbitrary data, prefixed with a 32-bit integer specifying its length (in bytes), then the verbatim contents of the array, padded to 32 bits with undefined data.
+array: A blob of arbitrary data, prefixed with a 32-bit integer specifying
+    its length (in bytes), then the verbatim contents of the array, padded
+    to 32 bits with undefined data.
 
-fd: 0-bit value on the primary transport, but transfers a file descriptor to the other end using the ancillary data in the Unix domain socket message (msg_control).
+fd: 0-bit value on the primary transport, but transfers a file descriptor
+     to the other end using the ancillary data in the Unix domain socket
+     message (msg_control).
 
-enum: A single value (or bitmap) from an enumeration of known constants, encoded into a 32-bit integer.
+enum: A single value (or bitmap) from an enumeration of known constants,
+    encoded into a 32-bit integer.
 
 
 =============
@@ -173,6 +182,11 @@ run program to wlsock
                              (indx . ,rx) (proc . ,proc))))
                (values (1+ rx) ex (cons entry seed)))
              (sxml-match (car args)
+               ((arg (@ (name ,name) (type "new_id") (interface ,_)))
+                (loop (cons name names) (cons "new_id" types) (cdr args)))
+               ((arg (@ (name ,name) (type "new_id")))
+                (loop (cons* name "version" "interface" names)
+                      (cons* "new_id" "uint" "string" types) (cdr args)))
                ((arg (@ (name ,name) (type ,type)))
                 (loop (cons name names) (cons type types) (cdr args)))))))
       
@@ -270,7 +284,7 @@ run program to wlsock
          (cil (call-with-values
                   (lambda () (fold-values process-iface/c ifl 0 '()))
                 (lambda (ix cil) (reverse cil))))
-         (cil (list (car cil) (cadr cil)))
+         ;;(cil (list (car cil) (cadr cil)))
          )
     ;;
     (sf ";; wl-client-code.scm - from wayland.xml\n\n")

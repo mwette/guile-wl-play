@@ -78,6 +78,9 @@
 (define-syntax-rule (dec-s32 bv ix)
   (values (bytevector-s32-native-ref bv ix) (+ ix 4)))
 
+(define-syntax-rule (dec-fixed bv ix)
+  (values (bytevector-s32-native-ref bv ix) (+ ix 4)))
+
 (define (enc-string bv ix str) ;; => ix
   (let* ((ln (1+ (string-length str)))
          (ln-1 (1- ln)))
