@@ -114,8 +114,7 @@ exec guile $0
       (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))
     (lambda (ln cm) (sendmsg wl-sock rq-iobuf 0 ln cm))))
   
-(define (new-get-registry)
-  (sferr "new-get-registry called\n")
+(define (get-registry)
   (put-message rq-chan
     (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))))
 
@@ -133,9 +132,7 @@ exec guile $0
 
 (define (handle-wl_registry:global obj-id name interface version)
   ;; uint string uint
-  (sferr "global: name=~S interface=~S version=~S\n" name interface version)
-  ;;(sferr " ~A\n" (fmtbv/x ev-iobuf 0 32 4))
-  ;;(sf "  => bind: ~A\t~A (~A)\n" my-sy my-id name)
+  ;;(sferr "global: name=~S interface=~S version=~S\n" name interface version)
   (hash-set! registry interface (vector name interface version)))
 
 (define (wl-bind interface)
@@ -204,9 +201,7 @@ exec guile $0
     (wl_shm:create_pool shm-pool-id fd size)
     ))
 
-
 ;; =============================================================================
-
 
 (define socket-path
   (let ((dir (getenv "XDG_RUNTIME_DIR"))
@@ -241,22 +236,10 @@ exec guile $0
   
   ;; display
   (set! display-id 1)
-  #;(let* ((ob-indx display-id)
-         (if-indx (assq-ref wayland-index-dict 'wl_display))
-         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
-         (if-handlers (vector-ref wl-handler-vec-vec if-indx)))
-    (vector-set! object-decoders-vec ob-indx if-decoders)
-  (vector-set! object-handlers-vec ob-indx if-handlers))
   (set-object-handler display-id 'wl_display)
 
   ;; registry object
   (set! registry-id 2)
-  #;(let* ((ob-indx registry-id)
-         (if-indx (assq-ref wayland-index-dict 'wl_registry))
-         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
-         (if-handlers (vector-ref wl-handler-vec-vec if-indx)))
-    (vector-set! object-decoders-vec ob-indx if-decoders)
-    (vector-set! object-handlers-vec ob-indx if-handlers))
   (set-object-handler registry-id 'wl_registry)
   
   (*obj-count* 3))
@@ -280,20 +263,15 @@ exec guile $0
                     (loop #f 0 0 #f rqq)
                     (loop #t (+ n-sent n) (- n-left n) #f rqq)))
               )
-            (lambda (key . args)
-              (sferr "SEND ERROR\n")
-              ))
-          (loop tok 0 0 #f rqq))
-      )
+            (lambda (key . args) (sferr "SEND ERROR\n")))
+          (loop tok 0 0 #f rqq)))
      ((pair? rqq)
-      ;;(fsleep 1)
       (call-with-values (car rqq) 
         (lambda (ln cm)
           (sferr "sending msg size ~S\n" ln)
           (loop tok 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
-        ;;(sferr "queue message\n")
         (loop tok n-sent n-left cm (cons req rqq))))
      (else
       (sferr "error\n")))))
@@ -304,29 +282,17 @@ exec guile $0
              (opcode #f) (control #f))
     ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
-     ;;((not tok) (
      ((< n-have msg-size)
-      ;;(wait-for-readable wl-sock)
       (catch 'system-error
         (lambda ()
       (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
              (n-read (vector-ref res 0))
              (control (or control (vector-ref res 1)))
              (flags (vector-ref res 2)))
-        ;;(sferr "recv message n-read=~S\n" n-read)
-        (when (zero? n-read)
-          ;;(signal-condition! clear-to-send)
-          ;;(sferr "receiver yields\n")
-          ;;(sferr "receiver returns\n")
-          ;;(yield-current-task)
-          (fsleep 0.1)
-          )
+        (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
         (loop tok (+ n-have n-read) object-id msg-size opcode control)))
-        (lambda (key . args)
-          (sferr "RECV ERROR\n")))
-      )
+        (lambda (key . args) (sferr "RECV ERROR\n"))))
      ((not object-id)
-      ;;(sferr "receiver: not object-id\n")
       (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
              (word1 (bytevector-u32-native-ref ev-iobuf 4))
              (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
@@ -360,54 +326,19 @@ exec guile $0
    (set! wl-sock (connect-display))
    (install-handlers)
    ;;
-   (spawn-fiber sender)
-   (fsleep 1)
    (spawn-fiber receiver)
-   #;(schedule-task-when-fd-readable
-    (current-scheduler) (port->fdes wl-sock) receiver)
-   ;;(new-get-registry)
-   ;;(old-get-registry)
-   (fsleep 2)
+   (spawn-fiber sender)
+   (get-registry)
+   ;;
    (spawn-fiber monitor)
-   ;;(pp (map car (hash-map->list cons registry)))
    
-   ;;(fsleep 1)
+   (fsleep 1)
    ;;(wl-bind "wl_shm")
    (fsleep 300)
    (sf "done-cond: ~S\n" done-cond)
    ;;(pp formats)
    ;;(wait done-cond)
    (close-port wl-sock))
- ;;#:scheduler (make-scheduler #:parallelism 2)
- #:hz 0
- ;;#:parallelism 2
- #:install-suspendable-ports? #t)
+ #:hz 0 #:install-suspendable-ports? #f)
 
 ;; --- last line ---
-#|
-global: 1	wl_compositor
-global: 2	wl_drm
-global: 3	wl_shm
-global: 4	wl_output
-global: 5	zxdg_output_manager_v1
-global: 6	wl_data_device_manager
-global: 7	zwp_primary_selection_device_manager_v1
-global: 8	gtk_primary_selection_device_manager
-global: 9	wl_subcompositor
-global: 10	xdg_wm_base
-global: 11	zxdg_shell_v6
-global: 12	gtk_shell1
-global: 13	wp_viewporter
-global: 14	zwp_pointer_gestures_v1
-global: 15	zwp_tablet_manager_v2
-global: 16	wl_seat
-global: 17	zwp_relative_pointer_manager_v1
-global: 18	zwp_pointer_constraints_v1
-global: 19	zxdg_exporter_v1
-global: 20	zxdg_importer_v1
-global: 21	zwp_linux_dmabuf_v1
-global: 22	zwp_keyboard_shortcuts_inhibit_manager_v1
-global: 23	zwp_text_input_manager_v3
-global: 24	wp_presentation
-global: 25	xdg_activation_v1
-|#
