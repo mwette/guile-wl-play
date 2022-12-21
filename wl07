@@ -93,7 +93,6 @@ exec guile $0
               (and dec-vec #t) (and decoder #t)
               (and hlr-vec #t) (and handler #t))))))
 
-(define done-cond #f)
 (define rq-chan #f)                     ; channel for issuing requests
 
 (define null-id 0)
@@ -106,7 +105,6 @@ exec guile $0
 (define wl-sock #f)
 (define rq-iobuf #f)
 (define ev-iobuf #f)
-(define io-tok #f)
 
 (define (get-registry)
   (put-message rq-chan
@@ -165,7 +163,7 @@ exec guile $0
 ;; argb8888 = 0
 ;; xrgb8888 = 1
 
-(define shm-poll-id #f)
+(define shm-pool-id #f)
 
 (define (wl_shm:create_pool id fd size)
   (put-message rq-chan
@@ -177,7 +175,7 @@ exec guile $0
 
 (define (handle-wl_shm:format obj-id format)
   ;; format is uint enum format
-  (sf "format ~A\n" format)
+  ;; (sf "format ~A\n" format)
   (set! formats (cons format formats)))
 
 ;; --- stuff
@@ -238,71 +236,66 @@ exec guile $0
   
   (*obj-count* 3))
 
-;; https://github.com/wingo/fibers/blob/master/fibers.scm#L61
-;;(define wait-for-readable (@@ (fibers) wait-for-readable))
+;; ==================================
 
 (define (sender)
   (sferr "sender starting ...\n")
-  (let loop ((tok #t) (n-sent 0) (n-left 0) (cm #f) (rqq '()))
+  (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
     (cond
      ((positive? n-left)
-      ;;(sferr "send message @~S\n" n-sent)
-      (if tok
-          (catch 'system-error
-            (lambda ()
-              (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
-                (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
-                (force-output wl-sock)
-                (if (= n n-left)
-                    ;;(loop #f 0 0 #f rqq)
-                    (loop #t 0 0 #f rqq)
-                    (loop #t (+ n-sent n) (- n-left n) #f rqq)))
-              )
-            (lambda (key . args) (sferr "SEND ERROR\n")))
-          (loop tok 0 0 #f rqq)))
+      (catch #t
+        (lambda ()
+          ;;(sferr "send message @~S\n" n-sent)
+          ;;(sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
+          (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
+            (force-output wl-sock)
+            (loop (+ n-sent n) (- n-left n) #f rqq)))
+        (lambda (key . args) (sferr "sender error\n"))))
      ((pair? rqq)
       (call-with-values (car rqq) 
         (lambda (ln cm)
-          (sferr "sending msg size ~S\n" ln)
-          (loop tok 0 ln cm (cdr rqq)))))
+          ;;(sferr "sending msg size ~S\n" ln)
+          (loop 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
-        (loop tok n-sent n-left cm (cons req rqq))))
+        (loop n-sent n-left cm (cons req rqq))))
      (else
       (sferr "error\n")))))
 
 (define (receiver)
   (sferr "receiver starting ...\n")
-  (let loop ((tok #f) (n-have 0) (object-id #f) (msg-size 8)
-             (opcode #f) (control #f))
+  (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
     ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
      ((< n-have msg-size)
       (catch 'system-error
         (lambda ()
-      (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
-             (n-read (vector-ref res 0))
-             (control (or control (vector-ref res 1)))
-             (flags (vector-ref res 2)))
-        (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
-        (loop tok (+ n-have n-read) object-id msg-size opcode control)))
-        (lambda (key . args) (sferr "RECV ERROR\n"))))
+          (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
+                 (n-read (vector-ref res 0))
+                 (control (or control (vector-ref res 1)))
+                 (flags (vector-ref res 2)))
+            (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
+            (loop (+ n-have n-read) object-id msg-size opcode control)))
+        (lambda (key . args) (sferr "receiver error\n"))))
      ((not object-id)
       (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
              (word1 (bytevector-u32-native-ref ev-iobuf 4))
              (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
              (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
-        (loop tok n-have object-id msg-size opcode control)))
+        (loop n-have object-id msg-size opcode control)))
      (else
       ;;(sferr "dispatch ~S ~S\n" object-id opcode)
       (dispatch object-id opcode ev-iobuf 8 control)
       (if (> n-have msg-size)
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
-      (loop tok (- n-have msg-size) #f 8 opcode control)))))
+      (loop (- n-have msg-size) #f 8 opcode control)))))
 
 ;; ================================
 
-(define (done) (and done-cond (signal-condition! done-cond)))
+(define done-cond #f)
+
+(define (done)
+  (and done-cond (signal-condition! done-cond)))
 
 (define (monitor)
   (let* ((server (spawn-coop-repl-server)))
@@ -314,20 +307,18 @@ exec guile $0
 (run-fibers
  (lambda ()
    (set! done-cond (make-condition))
-   (set! io-tok (make-condition))
    (set! rq-chan (make-channel))
    (set! wl-sock (connect-display))
    (install-handlers)
    ;;
    (spawn-fiber receiver)
    (spawn-fiber sender)
-   ;;(get-registry)
+   (get-registry)
+   (fsleep 1)
+   (wl-bind "wl_shm")
+   (fsleep 1)
    ;;
    (spawn-fiber monitor)
-   
-   (fsleep 1)
-   ;;(wl-bind "wl_shm")
-   ;;(fsleep 1) (pp formats)
    (wait done-cond)
    (close-port wl-sock))
  #:hz 0 #:install-suspendable-ports? #f)
