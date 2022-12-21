@@ -133,7 +133,7 @@ exec guile $0
 
 (define (handle-wl_registry:global obj-id name interface version)
   ;; uint string uint
-  ;;(sferr "global: name=~S interface=~S version=~S\n" name interface version)
+  (sferr "global: name=~S interface=~S version=~S\n" name interface version)
   ;;(sferr " ~A\n" (fmtbv/x ev-iobuf 0 32 4))
   ;;(sf "  => bind: ~A\t~A (~A)\n" my-sy my-id name)
   (hash-set! registry interface (vector name interface version)))
@@ -339,42 +339,7 @@ exec guile $0
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
       (loop tok (- n-have msg-size) #f 8 opcode control)))))
 
-(define (hub)
-  (let loop ((tok #f) (n-have 0) (object-id #f) (msg-size 8)
-             (opcode #f) (control #f))
-    ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
-    (cond
-     ;;((not tok) (
-     ((< n-have msg-size)
-      ;;(wait-for-readable wl-sock)
-      (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
-             (n-read (vector-ref res 0))
-             (control (or control (vector-ref res 1)))
-             (flags (vector-ref res 2)))
-        ;;(sferr "recv message n-read=~S\n" n-read)
-        (when (zero? n-read)
-          ;;(signal-condition! clear-to-send)
-          ;;(sferr "receiver yields\n")
-          (yield-current-task)
-          ;;(sferr "receiver returns\n")
-          ;;(fsleep 1)
-          )
-        (loop tok (+ n-have n-read) object-id msg-size opcode control)))
-     ((not object-id)
-      ;;(sferr "receiver: not object-id\n")
-      (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
-             (word1 (bytevector-u32-native-ref ev-iobuf 4))
-             (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
-             (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
-        (loop tok n-have object-id msg-size opcode control)))
-     (else
-      (sferr "receiver: dispatch ~S ~S\n" object-id opcode)
-      (dispatch object-id opcode ev-iobuf 8 control)
-      (if (> n-have msg-size)
-          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
-      (loop tok (- n-have msg-size) #f 8 opcode control)))))
-
-;; === monitor ================================================================
+;; === monitor ======================
 
 (define (done) (and done-cond (signal-condition! done-cond)))
 
@@ -384,6 +349,8 @@ exec guile $0
       (poll-coop-repl-server server)
       (yield-current-task)
       (loop))))
+
+;; === main =========================
 
 (run-fibers
  (lambda ()
@@ -398,17 +365,12 @@ exec guile $0
    (spawn-fiber receiver)
    #;(schedule-task-when-fd-readable
     (current-scheduler) (port->fdes wl-sock) receiver)
-   #|
-   |#
    ;;(new-get-registry)
    ;;(old-get-registry)
    (fsleep 2)
    (spawn-fiber monitor)
-   ;;(spawn-fiber monitor #:scheduler (make-scheduler))
-   #;(schedule-task-when-fd-readable
-    (current-scheduler) (port->fdes mn-sock) monitor)
-   ;;
    ;;(pp (map car (hash-map->list cons registry)))
+   
    ;;(fsleep 1)
    ;;(wl-bind "wl_shm")
    (fsleep 300)
