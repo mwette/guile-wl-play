@@ -85,12 +85,13 @@ exec guile $0
          (hlr-vec (vector-ref object-handlers-vec obj-id))
          (handler (and (vector-ref hlr-vec opcode))))
     (if (and decoder handler)
-        (call-with-values
-            (lambda () (decoder obj-id bv ix cm))
-          handler)
-        (sf "obj-id=~S opcode=~S dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
-            obj-id opcode
-            (and dec-vec #t) (and decoder #t) (and hlr-vec #t) (and handler #t)))))
+        (call-with-values (lambda () (decoder obj-id bv ix cm)) handler)
+        (begin
+          (sf "dispatch: missing decoder or handler: id=~S op=~S\n"
+              obj-id opcode)
+          (sf "  dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
+              (and dec-vec #t) (and decoder #t)
+              (and hlr-vec #t) (and handler #t))))))
 
 (define done-cond #f)
 (define rq-chan #f)                     ; channel for issuing requests
@@ -107,13 +108,6 @@ exec guile $0
 (define ev-iobuf #f)
 (define io-tok #f)
 
-(define (old-get-registry)
-  (sferr "old-get-registry called\n")
-  ;; request: wl_display:get_registry 2
-  (call-with-values
-      (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))
-    (lambda (ln cm) (sendmsg wl-sock rq-iobuf 0 ln cm))))
-  
 (define (get-registry)
   (put-message rq-chan
     (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))))
@@ -181,8 +175,9 @@ exec guile $0
 ;; informs of allowed formats
 (define formats '())
 
-(define (handle-wl_shm:format format)
+(define (handle-wl_shm:format obj-id format)
   ;; format is uint enum format
+  (sf "format ~A\n" format)
   (set! formats (cons format formats)))
 
 ;; --- stuff
@@ -195,7 +190,6 @@ exec guile $0
          (fd (port->fdes port)))
     (truncate-file fd size)
     (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_ANONYMOUS fd)
-    fd
     ;;
     (set! shm-pool-id (obj-count++))
     (wl_shm:create_pool shm-pool-id fd size)
@@ -260,7 +254,8 @@ exec guile $0
                 (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
                 (force-output wl-sock)
                 (if (= n n-left)
-                    (loop #f 0 0 #f rqq)
+                    ;;(loop #f 0 0 #f rqq)
+                    (loop #t 0 0 #f rqq)
                     (loop #t (+ n-sent n) (- n-left n) #f rqq)))
               )
             (lambda (key . args) (sferr "SEND ERROR\n")))
@@ -305,7 +300,7 @@ exec guile $0
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
       (loop tok (- n-have msg-size) #f 8 opcode control)))))
 
-;; === monitor ======================
+;; ================================
 
 (define (done) (and done-cond (signal-condition! done-cond)))
 
@@ -315,8 +310,6 @@ exec guile $0
       (poll-coop-repl-server server)
       (yield-current-task)
       (loop))))
-
-;; === main =========================
 
 (run-fibers
  (lambda ()
@@ -328,16 +321,14 @@ exec guile $0
    ;;
    (spawn-fiber receiver)
    (spawn-fiber sender)
-   (get-registry)
+   ;;(get-registry)
    ;;
    (spawn-fiber monitor)
    
    (fsleep 1)
    ;;(wl-bind "wl_shm")
-   (fsleep 300)
-   (sf "done-cond: ~S\n" done-cond)
-   ;;(pp formats)
-   ;;(wait done-cond)
+   ;;(fsleep 1) (pp formats)
+   (wait done-cond)
    (close-port wl-sock))
  #:hz 0 #:install-suspendable-ports? #f)
 
