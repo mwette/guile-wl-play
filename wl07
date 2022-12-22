@@ -1,6 +1,6 @@
 #!/bin/bash
 # -*- scheme -*-
-# wl07 - roll in fibers ???
+# wl07 - wayland client in fibers
 
 LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
@@ -11,6 +11,10 @@ export GUILE_LOAD_PATH
 #exec gdb --args guile $0
 exec guile $0
 !#
+;; TODO
+;;   add a layer somehow to callers don't need to pass rq-iobuf 0
+;;   need a way to block the sender until a number of messages have
+;;   built up
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
@@ -20,8 +24,8 @@ exec guile $0
 (use-modules (sockmsg))
 
 (use-modules (ice-9 pretty-print))
-(define (sf fmt . args) (apply simple-format #t fmt args))
-(define pp pretty-print)
+;;(define (sf fmt . args) (apply simple-format #t fmt args))
+(define (pp exp) (pretty-print exp))
 
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 (define (pperr exp) (pretty-print exp (current-error-port)))
@@ -87,11 +91,11 @@ exec guile $0
     (if (and decoder handler)
         (call-with-values (lambda () (decoder obj-id bv ix cm)) handler)
         (begin
-          (sf "dispatch: missing decoder or handler: id=~S op=~S\n"
-              obj-id opcode)
-          (sf "  dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
-              (and dec-vec #t) (and decoder #t)
-              (and hlr-vec #t) (and handler #t))))))
+          (sferr "dispatch: missing decoder or handler: id=~S op=~S\n"
+                 obj-id opcode)
+          (sferr "  dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
+                 (and dec-vec #t) (and decoder #t)
+                 (and hlr-vec #t) (and handler #t))))))
 
 (define rq-chan #f)                     ; channel for issuing requests
 
@@ -118,7 +122,7 @@ exec guile $0
 
 ;; wl_display:delete_id
 (define (handle-wl_display:delete_id obj-id id)
-  (sf "delete-id: ~S\n" id))
+  (sferr "delete-id: ~S\n" id))
 
 ;; --- wl_registry
 
@@ -128,24 +132,19 @@ exec guile $0
   (hash-set! registry interface (vector name interface version)))
 
 (define (wl-bind interface)
-  (sferr "bind ~S\n" interface)
+  ;;(sferr "bind ~S\n" interface)
   (let* ((info (hash-ref registry interface))
          (name (vector-ref info 0))
          (version (vector-ref info 2))
          (my-id (obj-count++))
          (my-sy (string->symbol interface)))
-    (sferr "  name=~S version=~S my-id=~S\n" name version my-id)
+    ;;(sferr "  name=~S version=~S my-id=~S\n" name version my-id)
     (hashq-set! object-dict my-sy my-id)
     (set-object-handler my-id my-sy)
     (put-message rq-chan
       (lambda ()
         (encode-wl_registry:bind
          registry-id rq-iobuf 0 name interface version my-id)))))
-
-;; TODO
-;;   add a layer somehow to callers don't need to pass rq-iobuf 0
-;;   need a way to block the sender until a number of messages have
-;;   built up
 
 ;; --- wl_shm_pool
 
@@ -163,35 +162,17 @@ exec guile $0
 ;; argb8888 = 0
 ;; xrgb8888 = 1
 
-(define shm-pool-id #f)
-
 (define (wl_shm:create_pool id fd size)
   (put-message rq-chan
-    (lambda ()
-      (encode-wl_shm:create_pool id rq-iobuf 0 id fd size))))
+    (lambda () (encode-wl_shm:create_pool id rq-iobuf 0 id fd size))))
 
 ;; informs of allowed formats
 (define formats '())
 
 (define (handle-wl_shm:format obj-id format)
   ;; format is uint enum format
-  ;; (sf "format ~A\n" format)
+  ;; (sferr "format ~A\n" format)
   (set! formats (cons format formats)))
-
-;; --- stuff
-
-
-;; double-buffer window ARGB32 500x300 = 2*4*500x300 = 1,200,000
-(define (setup-window width height) ;; => fd
-  (let* ((size (* 2 4 width height))
-         (port (tmpfile))
-         (fd (port->fdes port)))
-    (truncate-file fd size)
-    (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_ANONYMOUS fd)
-    ;;
-    (set! shm-pool-id (obj-count++))
-    (wl_shm:create_pool shm-pool-id fd size)
-    ))
 
 ;; =============================================================================
 
@@ -236,6 +217,25 @@ exec guile $0
   
   (*obj-count* 3))
 
+
+;; double-buffer window ARGB32 500x300 = 2*4*500x300 = 1,200,000
+;; => bytevector
+(define guardian (make-guardian))
+(define shm-fd #f)
+(define mmap-bv #f)
+
+(define* (setup-buffer-pool #:optional (size #x1000000))
+  (let* ((port (tmpfile))(fd (port->fdes port)))
+    (guardian port)
+    (set! shm-fd fd)
+    (truncate-file fd size)
+    (set! mmap-bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+    (set! shm-pool-id (obj-count++))
+    ;;(sferr "calling create_pool ~S ~S ~S\n" shm-pool-id fd size)
+    (wl_shm:create_pool shm-pool-id fd size)))
+
+
+
 ;; ==================================
 
 (define (sender)
@@ -243,24 +243,26 @@ exec guile $0
   (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
     (cond
      ((positive? n-left)
+      (sferr "send message @~S\n" n-sent)
+      (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
+      (if cm (sferr " fd ~A\n" (dec-fd cm))
       (catch #t
         (lambda ()
-          ;;(sferr "send message @~S\n" n-sent)
-          ;;(sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
           (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
             (force-output wl-sock)
             (loop (+ n-sent n) (- n-left n) #f rqq)))
         (lambda (key . args) (sferr "sender error\n"))))
+      )
      ((pair? rqq)
       (call-with-values (car rqq) 
         (lambda (ln cm)
-          ;;(sferr "sending msg size ~S\n" ln)
+          (sferr "sending msg  ln ~S   cm ~S\n" ln cm)
           (loop 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
         (loop n-sent n-left cm (cons req rqq))))
      (else
-      (sferr "error\n")))))
+      (sferr "sender says wtf\n")))))
 
 (define (receiver)
   (sferr "receiver starting ...\n")
@@ -290,19 +292,17 @@ exec guile $0
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
       (loop (- n-have msg-size) #f 8 opcode control)))))
 
-;; ================================
-
-(define done-cond #f)
-
-(define (done)
-  (and done-cond (signal-condition! done-cond)))
-
 (define (monitor)
   (let* ((server (spawn-coop-repl-server)))
     (let loop ()
       (poll-coop-repl-server server)
       (yield-current-task)
       (loop))))
+
+(define done-cond #f)
+
+(define (done)
+  (and done-cond (signal-condition! done-cond)))
 
 (run-fibers
  (lambda ()
@@ -317,6 +317,7 @@ exec guile $0
    (fsleep 1)
    (wl-bind "wl_shm")
    (fsleep 1)
+   (setup-buffer-pool)
    ;;
    (spawn-fiber monitor)
    (wait done-cond)

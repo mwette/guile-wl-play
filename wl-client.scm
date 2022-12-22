@@ -13,7 +13,7 @@
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
 
-(define (sf fmt . args) (apply simple-format #t fmt args))
+;;(define (sf fmt . args) (apply simple-format #t fmt args))
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 (use-modules (ice-9 pretty-print))
 (define pp pretty-print)
@@ -117,7 +117,7 @@
 (define fd-cmsg-size (+ cmsghdr-size (sizeof int)))
 
 (define (enc-fd fd)
-  (let* ((bv (make-bytevector fd-cmsg-size #f)))
+  (let* ((bv (make-bytevector fd-cmsg-size)))
     (bytevector-size_t-set! bv 0 fd-cmsg-size)
     (bytevector-sint-native-set! bv fd-level-oset SOL_SOCKET)
     (bytevector-sint-native-set! bv fd-type-oset SCM_RIGHTS)
