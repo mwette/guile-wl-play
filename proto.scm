@@ -273,21 +273,40 @@ run program to wlsock
                (indx (assq-ref meth 'indx))
                (code (assq-ref meth 'proc))
                (tail (cdr ifl)))
-           (proc name type indx code tail (loop tail))))))
+          (proc name type indx code tail (loop tail))))))
 
+;;;
+
+(use-modules (srfi srfi-37))
+
+;;(define (1arg name) (lambda (args
+
+(define options
+  '())
+
+(define (parse-args args)
+  (args-fold (cdr args) options
+             (lambda (opt name args dict) (error "bad option: ~A" name))
+             (lambda (file dict) (cons file dict))
+             '()))
 
 (define (main)
-  (let* ((file "/usr/share/wayland/wayland.xml")
-         (sxml (call-with-input-file file
+  (let* ((args (parse-args (program-arguments)))
+         (spec (car args))
+         (base (basename spec ".xml"))
+         (sxml (call-with-input-file spec
                  (lambda (port) (xml->sxml port #:trim-whitespace? #t))))
          (ifl ((sxpath '(protocol interface)) sxml))
          (cil (call-with-values
                   (lambda () (fold-values process-iface/c ifl 0 '()))
                 (lambda (ix cil) (reverse cil))))
-         ;;(cil (list (car cil) (cadr cil)))
+         (code (string-append base "-client.scm"))
+         (port (open-output-file code))
+         (sf (lambda (fmt . args) (apply simple-format port fmt args)))
+         (pp (lambda (exp) (pretty-print exp port)))
          )
     ;;
-    (sf ";; wl-client-code.scm - from wayland.xml\n\n")
+    (sf ";; ~A - from ~A\n\n" code spec)
     (sf "(define-public wayland-index-dict\n  '(")
     (for-each-pair
      (lambda (iface next)
@@ -317,7 +336,7 @@ run program to wlsock
           (lambda (name type indx code next)
             (if (eq? type 'request)
                 (let ((fn (string->symbol (ss "encode-~A:~A" if-name name))))
-                  (pp `(define-public ,fn ,code)) (newline))))
+                  (pp `(define-public ,fn ,code)) (newline port))))
           (cddr iface))))
      cil)
     ;; decoders
@@ -332,7 +351,7 @@ run program to wlsock
                      (if (eq? type 'event) (cons code seed) seed))
                    '() (cddr iface))))
             cil))))
-    (newline)
+    (newline port)
     ;;
     (pp
      `(define-public (make-wl-handler-vec-vec)
@@ -345,9 +364,10 @@ run program to wlsock
                    (lambda (x) (eq? 'event (assq-ref x 'type)))
                    (cddr iface)))))
             cil))))
-    (newline)
+    (newline port)
     ;;
     (sf ";; --- last line ---\n")
+    (if port (close-port port))
     0))
 
 
