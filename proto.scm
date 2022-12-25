@@ -279,10 +279,12 @@ run program to wlsock
 
 (use-modules (srfi srfi-37))
 
-;;(define (1arg name) (lambda (args
+(define (1arg key) (lambda (opt name arg dict) (acons key arg dict)))
 
 (define options
-  '())
+  (list
+   (option '(#\n "nick") #t #f (1arg 'nick))
+   ))
 
 (define (parse-args args)
   (args-fold (cdr args) options
@@ -294,6 +296,7 @@ run program to wlsock
   (let* ((args (parse-args (program-arguments)))
          (spec (car args))
          (base (basename spec ".xml"))
+         (nick (or (assq-ref (cdr args) 'nick) base))
          (sxml (call-with-input-file spec
                  (lambda (port) (xml->sxml port #:trim-whitespace? #t))))
          (ifl ((sxpath '(protocol interface)) sxml))
@@ -307,7 +310,7 @@ run program to wlsock
          )
     ;;
     (sf ";; ~A - from ~A\n\n" code spec)
-    (sf "(define-public wayland-index-dict\n  '(")
+    (sf "(define-public ~A-index-dict\n  '(" nick)
     (for-each-pair
      (lambda (iface next)
        (sf "(~A . ~A)" (car iface) (cadr iface))
@@ -315,7 +318,7 @@ run program to wlsock
      cil)
     (sf "))\n\n")
     ;; opcode dict
-    (sf "(define-public wayland-opcode-dict-vec\n")
+    (sf "(define-public ~A-opcode-dict-vec\n" nick)
     (sf "  #(")
     (for-each-pair
      (lambda (iface next)
