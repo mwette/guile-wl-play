@@ -5,16 +5,35 @@
 LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
 
+NYACC_DIR=$HOME/repo/sv/nyacc/nyacc-rel/nyacc-1.08
+GUILE_LOAD_PATH=$NYACC_DIR/examples:$NYACC_DIR/module
 GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
 export GUILE_LOAD_PATH
 
 #exec gdb --args guile $0
 exec guile $0
 !#
+;; Copyright (C) 2022 Matthew Wette
+;;
+;; This library is free software; you can redistribute it and/or
+;; modify it under the terms of the GNU Lesser General Public
+;; License as published by the Free Software Foundation; either
+;; version 3 of the License, or (at your option) any later version.
+;;
+;; This library is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;; Lesser General Public License for more details.
+;;
+;; You should have received a copy of the GNU Lesser General Public License
+;; along with this library; if not, see <http://www.gnu.org/licenses/>.
+
 ;; TODO
-;;   add a layer somehow to callers don't need to pass rq-iobuf 0
+;; 1 add a layer somehow to callers don't need to pass rq-iobuf 0
 ;;   need a way to block the sender until a number of messages have
 ;;   built up
+;; 2 figure out how to really use kernel polling so guile doesn't
+;;   run at 100% all the time
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
@@ -24,11 +43,37 @@ exec guile $0
 (use-modules (sockmsg))
 
 (use-modules (ice-9 pretty-print))
-;;(define (sf fmt . args) (apply simple-format #t fmt args))
-(define (pp exp) (pretty-print exp))
-
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 (define (pperr exp) (pretty-print exp (current-error-port)))
+
+;; ============================================================================
+
+#|
+
+;; drm_magic_g -> unsigned-int
+;; drm_auth_t -> struct { drm_magic_t magic; }
+;;(define (get-drm-magic fd)
+;;  (let ((magic )
+
+(define ioctl
+  (let ((f (pointer->procedure
+            int
+            (dynamic-func "ioctl" (dynamic-link))
+            (list int unsigned-long '*))))
+    (lambda (fd request addr)
+      (f fd request addr))))
+
+(define (get-drm-auth fd) ;; =>
+  (let* ((szof (ffi:sizeof unsigned-long))
+         (temp (make-bytevector szof))
+         (addr (bytevector->pointer temp)))
+    (ioctl fd DRM_IOCTL_GET_MAGIC (bytevector->pointer temp))
+    (ioctl fd DRM_IOCTL_AUTH_MAGIC (bytevector->pointer temp))
+    (case szof
+      ((4) (bytevector-i32-native-ref temp 0))
+      ((8) (bytevector-i64-native-ref temp 0))
+      (else (error "setup-drm")))))
+|#     
 
 ;; ============================================================================
 
@@ -39,8 +84,6 @@ exec guile $0
 (use-modules (fibers conditions))
 (use-modules (fibers channels))
 
-;;(use-modules (ice-9 readline))
-;;(use-modules (ice-9 top-repl))
 (use-modules (system repl server))
 (use-modules (system repl coop-server))
 
@@ -65,7 +108,7 @@ exec guile $0
 ;; name -> id
 (define object-dict (make-hash-table 97))
 
-;; vector of object-id => ref into wl-handler-vec (handler by opcode)
+;; vector of object-id => ref into wl-decoder-vec (decoder by opcode)
 (define object-decoders-vec (make-vector 1000))
 
 ;; vector of object-id => ref into wl-handler-vec (handler by opcode)
@@ -76,8 +119,13 @@ exec guile $0
 
 ;; set-event-handler 'wl_displaly 'get_registry proc => prev-proc
 (define (set-event-handler interface event proc)
-  (let* ((if-indx (assq-ref wayland-index-dict interface))
-         (opcode (assq-ref (vector-ref wayland-opcode-dict-vec if-indx) event))
+  (let* ((if-indx (assq-ref wl-index-dict interface))
+         (x (begin
+              (sferr "if=~S ev=~S ix=~S\n" interface event if-indx)
+              (sferr "  ~S\n" (vector-ref wl-opcode-dict-vec if-indx))
+              (sferr "  ~S\n" (vector-ref wl-opcode-dict-vec if-indx))
+              ))
+         (opcode (assq-ref (vector-ref wl-opcode-dict-vec if-indx) event))
          (if-handlers (vector-ref wl-handler-vec-vec if-indx))
          (evt-handler (vector-ref if-handlers opcode)))
     (vector-set! if-handlers opcode proc)
@@ -91,11 +139,17 @@ exec guile $0
     (if (and decoder handler)
         (call-with-values (lambda () (decoder obj-id bv ix cm)) handler)
         (begin
+          #|
+          (sferr "obj-id=~S opcode=~S\n" obj-id opcode)
+          (sferr "decoder:\n") (pperr decoder)
+          (sferr "handler:\n") (pperr handler)
+          |#
           (sferr "dispatch: missing decoder or handler: id=~S op=~S\n"
                  obj-id opcode)
           (sferr "  dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
                  (and dec-vec #t) (and decoder #t)
-                 (and hlr-vec #t) (and handler #t))))))
+                 (and hlr-vec #t) (and handler #t))
+          ))))
 
 (define rq-chan #f)                     ; channel for issuing requests
 
@@ -159,8 +213,7 @@ exec guile $0
 
 ;; --- wl_shm
 
-;; argb8888 = 0
-;; xrgb8888 = 1
+;; formats: argb8888 = 0, xrgb8888 = 1
 
 (define (wl_shm:create_pool id fd size)
   (put-message rq-chan
@@ -195,17 +248,29 @@ exec guile $0
 (define (set-object-handler obj-id obj-name)
   (let* ((ob-indx obj-id)
          (ob-name (if (string? obj-name) (string->symbol obj-name) obj-name))
-         (if-indx (assq-ref wayland-index-dict ob-name))
+         (if-indx (assq-ref wl-index-dict ob-name))
          (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
          (if-handlers (vector-ref wl-handler-vec-vec if-indx)))
     (vector-set! object-decoders-vec ob-indx if-decoders)
     (vector-set! object-handlers-vec ob-indx if-handlers)))
 
+;; === appl ===========================
+
+(use-modules (ffi cairo))
+(use-modules (system ffi-help-rt))
+(use-modules ((system foreign) #:prefix ffi:))
+
+(define guardian (make-guardian))
+(define shm-fd #f)
+(define shm-bv #f)
+
 (define (install-handlers)
   (set-event-handler 'wl_display 'error handle-wl_display:error)
   (set-event-handler 'wl_display 'delete_id handle-wl_display:delete_id)
   (set-event-handler 'wl_registry 'global handle-wl_registry:global)
-  (set-event-handler 'wl_shm 'format handle-wl_shm:format)
+  ;;(set-event-handler 'wl_shm 'format handle-wl_shm:format)
+
+  ;; 0 is the null object
   
   ;; display
   (set! display-id 1)
@@ -217,26 +282,91 @@ exec guile $0
   
   (*obj-count* 3))
 
-
-;; double-buffer window ARGB32 500x300 = 2*4*500x300 = 1,200,000
-;; => bytevector
-(define guardian (make-guardian))
-(define shm-fd #f)
-(define mmap-bv #f)
-
-(define* (setup-buffer-pool #:optional (size #x1000000))
+(define* (setup-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
   (let* ((port (tmpfile))(fd (port->fdes port)))
     (guardian port)
     (set! shm-fd fd)
     (truncate-file fd size)
-    (set! mmap-bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+    (set! shm-bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
     (set! shm-pool-id (obj-count++))
     ;;(sferr "calling create_pool ~S ~S ~S\n" shm-pool-id fd size)
     (wl_shm:create_pool shm-pool-id fd size)))
 
 
+#|
+cairo_public cairo_surface_t *
+cairo_image_surface_create_for_data (unsigned char             *data,
+                                     cairo_format_t             format,
+                                     int                        width,
+                                     int                        height,
+                                     int                        stride);
 
-;; ==================================
+
+500 x 300 * 4 = 600,000
+
+(define wbuf (make-vector 2 #f))
+(define wsrf (make-vector 2 #f))
+(define wcro (make-vector 2 #f))
+
+(define CAIRO ffi-cairo-symbol-val)
+
+(define (setup-surfaces)
+  (define width 500)
+  (define height 300)
+  (define stride (* width 4))
+  (define size (* width height 4))
+
+  (define (setup ix)
+    (let* ((offset (* ix size))
+           (data (+ (pointer-address (bytevector->pointer shm-bv)) offset))
+           ;;
+           (id (obj-count++))
+           (wfmt 0)
+           ;;
+           (srf (cairo_image_surface_create_for_data
+                 data (CAIRO 'CAIRO_FORMAT_ARGB32) width height stride))
+           (cro (cairo_create srf))
+           )
+      (wl_shm_pool:create_buffer id offset width height stride wfmt)
+      (vector-set! wbuf ix id)
+      (vector-set! wcro ix (cairo_create srf))))
+  (setup 0)
+  (setup 1))
+
+  (define (cairo-draw ix)
+    (let ((text "Hello, World!")
+          (cro (vector-ref wcro ix))
+          (extents (make-cairo_text_extents_t)))
+      (cairo_select_font_face
+       cro "Sans" 'CAIRO_FONT_SLANT_NORMAL 'CAIRO_FONT_WEIGHT_NORMAL)
+      (cairo_set_font_size cro 52.0)
+      (cairo_text_extents cro text (pointer-to extents))
+      (let ((x (- 250.0 (+ (/ (fh-object-ref extents 'width) 2.0)
+                           (fh-object-ref extents 'x_bearing))))
+            (y (- 250.0 (+ (/ (fh-object-ref extents 'height) 2.0)
+                           (fh-object-ref extents 'y_bearing)))))
+        (cairo_move_to cro x y)
+        (cairo_show_text cro text)
+        (cairo_set_source_rgba cro 1 0.2 0.2 0.6)
+        (cairo_set_line_width cro 6.0)
+        (cairo_arc cro  x  y  10.0 0 (* 2 M_PI))
+        (cairo_fill cro)
+        (cairo_move_to cro 128.0 0)
+        (cairo_rel_line_to cro 0 256)
+        (cairo_move_to cro 0 128.0)
+        (cairo_rel_line_to cro 256 0)
+        (cairo_stroke cro))))
+
+(define (post-msg ix)
+  (let (
+        )
+    ;; wl_surface_attach
+    ;; wl_surface:damage
+    ;; wl_surface:commit
+    #f))
+
+|#
+;; === agents ========================
 
 (define (sender)
   (sferr "sender starting ...\n")
@@ -306,18 +436,19 @@ exec guile $0
 
 (run-fibers
  (lambda ()
+   (set! wl-sock (connect-display))
    (set! done-cond (make-condition))
    (set! rq-chan (make-channel))
-   (set! wl-sock (connect-display))
    (install-handlers)
    ;;
    (spawn-fiber receiver)
    (spawn-fiber sender)
    (get-registry)
    (fsleep 1)
-   (wl-bind "wl_shm")
-   (fsleep 1)
-   (setup-buffer-pool)
+   ;;(wl-bind "wl_shm")
+   ;;(wl-bind "wl_shm_pool")
+   ;;(fsleep 1)
+   ;;(setup-buffer-pool)
    ;;
    (spawn-fiber monitor)
    (wait done-cond)

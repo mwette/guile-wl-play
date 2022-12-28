@@ -1,6 +1,20 @@
 #!/opt/local/bin/guile -s
 # -*- scheme -*-
 !#
+;; Copyright (C) 2022 Matthew Wette
+;;
+;; This library is free software; you can redistribute it and/or
+;; modify it under the terms of the GNU Lesser General Public
+;; License as published by the Free Software Foundation; either
+;; version 3 of the License, or (at your option) any later version.
+;;
+;; This library is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;; Lesser General Public License for more details.
+;;
+;; You should have received a copy of the GNU Lesser General Public License
+;; along with this library; if not, see <http://www.gnu.org/licenses/>.
 
 #|
 int, uint: 32-bit signed or unsigned integer.
@@ -66,7 +80,6 @@ run program to wlsock
 (use-modules ((srfi srfi-1) #:select (fold fold-right pair-for-each)))
 (define pp pretty-print)
 (define (sf fmt . args) (apply simple-format #t fmt args))
-(define (ss fmt . args) (apply simple-format #f fmt args))
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 
 ;; TODO
@@ -292,6 +305,9 @@ run program to wlsock
              (lambda (file dict) (cons file dict))
              '()))
 
+(define (ss fmt . args)
+  (string->symbol (apply simple-format #f fmt args)))
+
 (define (main)
   (let* ((args (parse-args (program-arguments)))
          (spec (car args))
@@ -310,16 +326,13 @@ run program to wlsock
          )
     ;;
     (sf ";; ~A - from ~A\n\n" code spec)
-    (sf "(define-public ~A-index-dict\n  '(" nick)
-    (for-each-pair
-     (lambda (iface next)
-       (sf "(~A . ~A)" (car iface) (cadr iface))
-       (if (pair? next) (sf "\n    ")))
-     cil)
-    (sf "))\n\n")
+    ;;
+    (pp `(define-public ,(ss "~A-iface-list" nick)
+           (quote ,(map string->symbol (map car cil)))))
+    (newline port)
     ;; opcode dict
-    (sf "(define-public ~A-opcode-dict-vec\n" nick)
-    (sf "  #(")
+    (sf "(define-public ~A-opcode-dict-list\n" nick)
+    (sf "  '(")
     (for-each-pair
      (lambda (iface next)
        (sf "(")
@@ -331,21 +344,10 @@ run program to wlsock
        (if (pair? next) (sf "\n    ")  (sf "))\n")))
      cil)
     (sf "\n")
-    ;; encoders
-    (for-each
-     (lambda (iface)
-       (let ((if-name (car iface)))
-         (for-each-method
-          (lambda (name type indx code next)
-            (if (eq? type 'request)
-                (let ((fn (string->symbol (ss "encode-~A:~A" if-name name))))
-                  (pp `(define-public ,fn ,code)) (newline port))))
-          (cddr iface))))
-     cil)
     ;; decoders
     (pp
-     `(define-public wl-decoder-vec-vec
-        (vector
+     `(define ,(ss "~A-decoder-vec-list" nick)
+        (list
          ,@(map-each-pair
             (lambda (iface next)
               `(vector
@@ -357,8 +359,8 @@ run program to wlsock
     (newline port)
     ;;
     (pp
-     `(define-public (make-wl-handler-vec-vec)
-        (vector
+     `(define ,(ss "~A-handler-vec-list" nick)
+        (list
          ,@(map-each-pair
             (lambda (iface next)
               `(make-vector
@@ -368,6 +370,24 @@ run program to wlsock
                    (cddr iface)))))
             cil))))
     (newline port)
+    ;;
+    (sf "(add-iface-list ~A-iface-list)\n" nick)
+    (sf "(add-opcode-dict-list ~A-opcode-dict-list)\n" nick)
+    (sf "(add-decoder-vec-list ~A-decoder-vec-list)\n" nick)
+    (sf "(add-handler-vec-list ~A-handler-vec-list)\n" nick)
+    (newline port)
+    
+    ;; encoders
+    (for-each
+     (lambda (iface)
+       (let ((if-name (car iface)))
+         (for-each-method
+          (lambda (name type indx code next)
+            (if (eq? type 'request)
+                (let ((fn (ss "encode-~A:~A" if-name name)))
+                  (pp `(define-public ,fn ,code)) (newline port))))
+          (cddr iface))))
+     cil)
     ;;
     (sf ";; --- last line ---\n")
     (if port (close-port port))
