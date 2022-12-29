@@ -1,6 +1,7 @@
 #!/bin/bash
 # -*- scheme -*-
 # wl07 - wayland client in fibers
+# telnet localhost 37146
 
 LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
@@ -98,7 +99,7 @@ exec guile $0
 ;; ============================================================================
 
 ;; per-interface vectors of handlers by opcode
-(define wl-handler-vec-vec (make-wl-handler-vec-vec))
+(define my-handler-vec-vec (make-wl-handler-vec-vec))
 
 ;; number of objects 
 ;;(define *obj-count* (make-parameter 0))
@@ -117,16 +118,33 @@ exec guile $0
 ;; vector of objec-id => user-defined value
 (define object-value-vec (make-vector 1000))
 
+;; pre-defined object ids
+(define null-id 0)
+(define display-id 1)
+(define registry-id 2)
+(define shm-pool-id 3)
+(define shm-id 4)
+(define dmabuf-id 5)                    ; zwp_linux_dmabuf_v1
+(define db-params-id 6)                 ; zwp_linux_dmabuf_params_v1
+(define starting-object-count 7)
+
+;; interface-name => #(name interface version)
+(define registry (make-hash-table))
+
+(define (set-object-handler obj-id obj-name)
+  (let* ((ob-indx obj-id)
+         (ob-name (if (string? obj-name) (string->symbol obj-name) obj-name))
+         (if-indx (assq-ref wl-index-dict ob-name))
+         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
+         (if-handlers (vector-ref my-handler-vec-vec if-indx)))
+    (vector-set! object-decoders-vec ob-indx if-decoders)
+    (vector-set! object-handlers-vec ob-indx if-handlers)))
+
 ;; set-event-handler 'wl_displaly 'get_registry proc => prev-proc
 (define (set-event-handler interface event proc)
   (let* ((if-indx (assq-ref wl-index-dict interface))
-         (x (begin
-              (sferr "if=~S ev=~S ix=~S\n" interface event if-indx)
-              (sferr "  ~S\n" (vector-ref wl-opcode-dict-vec if-indx))
-              (sferr "  ~S\n" (vector-ref wl-opcode-dict-vec if-indx))
-              ))
          (opcode (assq-ref (vector-ref wl-opcode-dict-vec if-indx) event))
-         (if-handlers (vector-ref wl-handler-vec-vec if-indx))
+         (if-handlers (vector-ref my-handler-vec-vec if-indx))
          (evt-handler (vector-ref if-handlers opcode)))
     (vector-set! if-handlers opcode proc)
     evt-handler))
@@ -139,36 +157,24 @@ exec guile $0
     (if (and decoder handler)
         (call-with-values (lambda () (decoder obj-id bv ix cm)) handler)
         (begin
-          #|
-          (sferr "obj-id=~S opcode=~S\n" obj-id opcode)
-          (sferr "decoder:\n") (pperr decoder)
-          (sferr "handler:\n") (pperr handler)
-          |#
           (sferr "dispatch: missing decoder or handler: id=~S op=~S\n"
                  obj-id opcode)
           (sferr "  dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
                  (and dec-vec #t) (and decoder #t)
-                 (and hlr-vec #t) (and handler #t))
-          ))))
+                 (and hlr-vec #t) (and handler #t))))))
+
+;; ====================================
 
 (define rq-chan #f)                     ; channel for issuing requests
-
-(define null-id 0)
-(define display-id 1)
-(define registry-id 2)
-(define registry (make-hash-table))
-(define shm-pool-id 3)
-(define shm-id 4)
-
 (define wl-sock #f)
 (define rq-iobuf #f)
 (define ev-iobuf #f)
 
+;; --- wl_display
+
 (define (get-registry)
   (put-message rq-chan
-    (lambda () (encode-wl_display:get_registry 1 rq-iobuf 0 2))))
-
-;; --- wl_display
+    (lambda () (encode-wl_display:get_registry display-id rq-iobuf 0 2))))
 
 ;; wl_display:error
 (define (handle-wl_display:error obj-id object_id code message)
@@ -180,19 +186,22 @@ exec guile $0
 
 ;; --- wl_registry
 
+(define globals '())
+
 (define (handle-wl_registry:global obj-id name interface version)
   ;; uint string uint
   ;;(sferr "global: name=~S interface=~S version=~S\n" name interface version)
+  (set! globals (cons interface globals))
   (hash-set! registry interface (vector name interface version)))
 
-(define (wl-bind interface)
-  ;;(sferr "bind ~S\n" interface)
+(define* (wl-bind interface #:optional my-id)
+  (sferr "wl-bind ~S ~S\n" interface my-id)
   (let* ((info (hash-ref registry interface))
          (name (vector-ref info 0))
          (version (vector-ref info 2))
-         (my-id (obj-count++))
+         (my-id (or my-id (obj-count++)))
          (my-sy (string->symbol interface)))
-    ;;(sferr "  name=~S version=~S my-id=~S\n" name version my-id)
+    (sferr "  name=~S version=~S my-id=~S\n" name version my-id)
     (hashq-set! object-dict my-sy my-id)
     (set-object-handler my-id my-sy)
     (put-message rq-chan
@@ -206,7 +215,7 @@ exec guile $0
   (put-message rq-chan
     (lambda ()
       (encode-wl_shm_pool:create_buffer
-       id rq-iobuf 0 id offset width height stride format))))
+       shm-pool-id rq-iobuf 0 id offset width height stride format))))
 
 ;; wl_shm_pool::destroy
 ;; wl_shm_pool::resize
@@ -217,7 +226,7 @@ exec guile $0
 
 (define (wl_shm:create_pool id fd size)
   (put-message rq-chan
-    (lambda () (encode-wl_shm:create_pool id rq-iobuf 0 id fd size))))
+    (lambda () (encode-wl_shm:create_pool shm-id rq-iobuf 0 id fd size))))
 
 ;; informs of allowed formats
 (define formats '())
@@ -227,32 +236,15 @@ exec guile $0
   ;; (sferr "format ~A\n" format)
   (set! formats (cons format formats)))
 
-;; =============================================================================
+;; --- zwp_linux_dmabuf
 
-(define socket-path
-  (let ((dir (getenv "XDG_RUNTIME_DIR"))
-	(dpy (getenv "WAYLAND_DISPLAY")))
-    (and dir dpy (string-append dir "/" dpy))))
+(define (dmabuf:create_params params_id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_dmabuf_v1:create_params
+       dmabuf-id rq-iobuf 0 params_id))))
 
-(define (connect-display)
-  (let* ((path socket-path)
-         (style (logior SOCK_STREAM SOCK_CLOEXEC))
-         (sock (socket PF_UNIX style 0))
-         (conn (connect sock AF_UNIX path)))
-    ;;(setvbuf sock 'none)
-    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
-    (set! rq-iobuf (make-bytevector 1024))
-    (set! ev-iobuf (make-bytevector 1024))
-    sock))
-
-(define (set-object-handler obj-id obj-name)
-  (let* ((ob-indx obj-id)
-         (ob-name (if (string? obj-name) (string->symbol obj-name) obj-name))
-         (if-indx (assq-ref wl-index-dict ob-name))
-         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
-         (if-handlers (vector-ref wl-handler-vec-vec if-indx)))
-    (vector-set! object-decoders-vec ob-indx if-decoders)
-    (vector-set! object-handlers-vec ob-indx if-handlers)))
+;;(define (dmabuf-params::
 
 ;; === appl ===========================
 
@@ -268,7 +260,7 @@ exec guile $0
   (set-event-handler 'wl_display 'error handle-wl_display:error)
   (set-event-handler 'wl_display 'delete_id handle-wl_display:delete_id)
   (set-event-handler 'wl_registry 'global handle-wl_registry:global)
-  ;;(set-event-handler 'wl_shm 'format handle-wl_shm:format)
+  (set-event-handler 'wl_shm 'format handle-wl_shm:format)
 
   ;; 0 is the null object
   
@@ -280,7 +272,7 @@ exec guile $0
   (set! registry-id 2)
   (set-object-handler registry-id 'wl_registry)
   
-  (*obj-count* 3))
+  (*obj-count* starting-object-count))
 
 (define* (setup-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
   (let* ((port (tmpfile))(fd (port->fdes port)))
@@ -288,7 +280,7 @@ exec guile $0
     (set! shm-fd fd)
     (truncate-file fd size)
     (set! shm-bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
-    (set! shm-pool-id (obj-count++))
+    ;;(set! shm-pool-id (obj-count++))
     ;;(sferr "calling create_pool ~S ~S ~S\n" shm-pool-id fd size)
     (wl_shm:create_pool shm-pool-id fd size)))
 
@@ -366,11 +358,29 @@ cairo_image_surface_create_for_data (unsigned char             *data,
     #f))
 
 |#
+
 ;; === agents ========================
+
+(define socket-path
+  (let ((dir (getenv "XDG_RUNTIME_DIR"))
+	(dpy (getenv "WAYLAND_DISPLAY")))
+    (and dir dpy (string-append dir "/" dpy))))
+
+(define (connect-display)
+  (let* ((path socket-path)
+         (style (logior SOCK_STREAM SOCK_CLOEXEC))
+         (sock (socket PF_UNIX style 0))
+         (conn (connect sock AF_UNIX path)))
+    ;;(setvbuf sock 'none)
+    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
+    (set! rq-iobuf (make-bytevector 1024))
+    (set! ev-iobuf (make-bytevector 1024))
+    sock))
 
 (define (sender)
   (sferr "sender starting ...\n")
   (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
+    (fsleep 0.01)
     (cond
      ((positive? n-left)
       (sferr "send message @~S\n" n-sent)
@@ -379,14 +389,13 @@ cairo_image_surface_create_for_data (unsigned char             *data,
       (catch #t
         (lambda ()
           (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
-            (force-output wl-sock)
+            ;;(force-output wl-sock)
             (loop (+ n-sent n) (- n-left n) #f rqq)))
-        (lambda (key . args) (sferr "sender error\n"))))
-      )
+        (lambda (key . args) (sferr "sender error\n")))))
      ((pair? rqq)
       (call-with-values (car rqq) 
         (lambda (ln cm)
-          (sferr "sending msg  ln ~S   cm ~S\n" ln cm)
+          (sferr "sending msg  ln ~S  cm ~S\n" ln cm)
           (loop 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
@@ -397,6 +406,7 @@ cairo_image_surface_create_for_data (unsigned char             *data,
 (define (receiver)
   (sferr "receiver starting ...\n")
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
+    (fsleep 0.01)
     ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
      ((< n-have msg-size)
@@ -423,10 +433,12 @@ cairo_image_surface_create_for_data (unsigned char             *data,
       (loop (- n-have msg-size) #f 8 opcode control)))))
 
 (define (monitor)
+  (sferr "monitor starting ...\n")
   (let* ((server (spawn-coop-repl-server)))
     (let loop ()
       (poll-coop-repl-server server)
       (yield-current-task)
+      (fsleep 0.1)
       (loop))))
 
 (define done-cond #f)
@@ -443,11 +455,9 @@ cairo_image_surface_create_for_data (unsigned char             *data,
    ;;
    (spawn-fiber receiver)
    (spawn-fiber sender)
-   (get-registry)
-   (fsleep 1)
-   ;;(wl-bind "wl_shm")
-   ;;(wl-bind "wl_shm_pool")
-   ;;(fsleep 1)
+   (get-registry) (fsleep 1)
+   (wl-bind "wl_shm" shm-id) (fsleep 1)
+   ;;(wl-bind "wl_shm_pool" shm-pool-id) (fsleep 1)
    ;;(setup-buffer-pool)
    ;;
    (spawn-fiber monitor)
