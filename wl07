@@ -246,13 +246,9 @@ exec guile $0
       (encode-zwp_linux_dmabuf_v1:create_params
        dmabuf-id rq-iobuf 0 params_id))))
 
-;;(define (dmabuf-params::
+;; dmabuf-params
 
 ;; === appl ===========================
-
-(use-modules (ffi cairo))
-(use-modules (system ffi-help-rt))
-(use-modules ((system foreign) #:prefix ffi:))
 
 (define guardian (make-guardian))
 (define shm-fd #f)
