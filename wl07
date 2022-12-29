@@ -166,7 +166,6 @@ exec guile $0
 ;; ====================================
 
 (define rq-chan #f)                     ; channel for issuing requests
-(define wl-sock #f)
 (define rq-iobuf #f)
 (define ev-iobuf #f)
 
@@ -188,12 +187,6 @@ exec guile $0
 
 (define globals '())
 
-(define (handle-wl_registry:global obj-id name interface version)
-  ;; uint string uint
-  ;;(sferr "global: name=~S interface=~S version=~S\n" name interface version)
-  (set! globals (cons interface globals))
-  (hash-set! registry interface (vector name interface version)))
-
 (define* (wl-bind interface #:optional my-id)
   (sferr "wl-bind ~S ~S\n" interface my-id)
   (let* ((info (hash-ref registry interface))
@@ -208,6 +201,15 @@ exec guile $0
       (lambda ()
         (encode-wl_registry:bind
          registry-id rq-iobuf 0 name interface version my-id)))))
+
+(define (handle-wl_registry:global obj-id name interface version)
+  ;; uint string uint
+  ;;(sferr "global: name=~S interface=~S version=~S\n" name interface version)
+  (set! globals (cons interface globals))
+  (hash-set! registry interface (vector name interface version)))
+
+(define (handle-wl_registry:global_remove obj-id name)
+  (sferr "global_removed: ~S\n" name))
 
 ;; --- wl_shm_pool
 
@@ -260,17 +262,17 @@ exec guile $0
   (set-event-handler 'wl_display 'error handle-wl_display:error)
   (set-event-handler 'wl_display 'delete_id handle-wl_display:delete_id)
   (set-event-handler 'wl_registry 'global handle-wl_registry:global)
+  (set-event-handler 'wl_registry 'global_remove
+                     handle-wl_registry:global_remove)
   (set-event-handler 'wl_shm 'format handle-wl_shm:format)
 
   ;; 0 is the null object
-  
-  ;; display
-  (set! display-id 1)
+  ;; 1: wl_display
+  ;; 2: wl_registry
+  ;; 3: shm_id
   (set-object-handler display-id 'wl_display)
-
-  ;; registry object
-  (set! registry-id 2)
   (set-object-handler registry-id 'wl_registry)
+  (set-object-handler shm-id 'wl_shm)
   
   (*obj-count* starting-object-count))
 
@@ -284,82 +286,9 @@ exec guile $0
     ;;(sferr "calling create_pool ~S ~S ~S\n" shm-pool-id fd size)
     (wl_shm:create_pool shm-pool-id fd size)))
 
-
-#|
-cairo_public cairo_surface_t *
-cairo_image_surface_create_for_data (unsigned char             *data,
-                                     cairo_format_t             format,
-                                     int                        width,
-                                     int                        height,
-                                     int                        stride);
-
-
-500 x 300 * 4 = 600,000
-
-(define wbuf (make-vector 2 #f))
-(define wsrf (make-vector 2 #f))
-(define wcro (make-vector 2 #f))
-
-(define CAIRO ffi-cairo-symbol-val)
-
-(define (setup-surfaces)
-  (define width 500)
-  (define height 300)
-  (define stride (* width 4))
-  (define size (* width height 4))
-
-  (define (setup ix)
-    (let* ((offset (* ix size))
-           (data (+ (pointer-address (bytevector->pointer shm-bv)) offset))
-           ;;
-           (id (obj-count++))
-           (wfmt 0)
-           ;;
-           (srf (cairo_image_surface_create_for_data
-                 data (CAIRO 'CAIRO_FORMAT_ARGB32) width height stride))
-           (cro (cairo_create srf))
-           )
-      (wl_shm_pool:create_buffer id offset width height stride wfmt)
-      (vector-set! wbuf ix id)
-      (vector-set! wcro ix (cairo_create srf))))
-  (setup 0)
-  (setup 1))
-
-  (define (cairo-draw ix)
-    (let ((text "Hello, World!")
-          (cro (vector-ref wcro ix))
-          (extents (make-cairo_text_extents_t)))
-      (cairo_select_font_face
-       cro "Sans" 'CAIRO_FONT_SLANT_NORMAL 'CAIRO_FONT_WEIGHT_NORMAL)
-      (cairo_set_font_size cro 52.0)
-      (cairo_text_extents cro text (pointer-to extents))
-      (let ((x (- 250.0 (+ (/ (fh-object-ref extents 'width) 2.0)
-                           (fh-object-ref extents 'x_bearing))))
-            (y (- 250.0 (+ (/ (fh-object-ref extents 'height) 2.0)
-                           (fh-object-ref extents 'y_bearing)))))
-        (cairo_move_to cro x y)
-        (cairo_show_text cro text)
-        (cairo_set_source_rgba cro 1 0.2 0.2 0.6)
-        (cairo_set_line_width cro 6.0)
-        (cairo_arc cro  x  y  10.0 0 (* 2 M_PI))
-        (cairo_fill cro)
-        (cairo_move_to cro 128.0 0)
-        (cairo_rel_line_to cro 0 256)
-        (cairo_move_to cro 0 128.0)
-        (cairo_rel_line_to cro 256 0)
-        (cairo_stroke cro))))
-
-(define (post-msg ix)
-  (let (
-        )
-    ;; wl_surface_attach
-    ;; wl_surface:damage
-    ;; wl_surface:commit
-    #f))
-
-|#
-
 ;; === agents ========================
+
+(define wl-sock #f)
 
 (define socket-path
   (let ((dir (getenv "XDG_RUNTIME_DIR"))

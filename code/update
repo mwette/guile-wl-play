@@ -2,7 +2,7 @@
 
 if [ -d code ]; then cd code; fi
 
-../proto.scm ../../proto/wayland.xml
-../proto.scm --nick=dmabuf ../../proto/linux-dmabuf-unstable-v1.xml
+../scanner ../../proto/wayland.xml
+../scanner --nick=dmabuf ../../proto/linux-dmabuf-unstable-v1.xml
 
 # --- last line ---
