@@ -122,12 +122,6 @@ exec guile $0
 (define null-id 0)
 (define display-id 1)
 (define registry-id 2)
-;;(define shm-id #f)
-;;(define output-id #f)                    ; wl_output
-;;(define shm-pool-id #f)
-;;(define dmabuf-id #f)                    ; zwp_linux_dmabuf_v1
-;;(define db-params-id #f)                 ; zwp_linux_dmabuf_params_v1
-(define starting-object-count 30)
 
 ;; interface-name => #(name interface version)
 (define registry (make-hash-table))
@@ -172,9 +166,13 @@ exec guile $0
 
 ;; --- wl_display
 
-(define (get-registry)
+(define (wl_display:sync obj-id callback)
   (put-message rq-chan
-    (lambda () (encode-wl_display:get_registry display-id rq-iobuf 0 2))))
+    (lambda () (encode-wl_display:sync obj-id rq-iobuf 0 callback))))
+
+(define (wl_display:get_registry obj-id registry)
+  (put-message rq-chan
+    (lambda () (encode-wl_display:get_registry obj-id rq-iobuf 0 registry))))
 
 ;; wl_display:error
 (define (handle-wl_display:error obj-id object_id code message)
@@ -187,17 +185,15 @@ exec guile $0
 ;; --- wl_registry
 
 (define globals '())
-(define maxglob 0)
 
-(define* (my-bind interface #:optional my-id)
-  ;;(when (< (obj
-  (sferr "wl-bind ~S ~S\n" interface my-id)
+(define (my-bind interface)
   (let* ((info (hash-ref registry interface))
          (name (vector-ref info 0))
          (version (vector-ref info 2))
-         (my-id (or my-id (obj-count++)))
+         (my-id (obj-count++))
          (my-sy (string->symbol interface)))
-    (sferr "  name=~S version=~S my-id=~S\n" name version my-id)
+    (sferr "my-bind ~S: name=~S version=~S my-id=~S\n"
+           interface name version my-id)
     (hashq-set! object-dict my-sy my-id)
     (set-object-handler my-id my-sy)
     (put-message rq-chan
@@ -208,8 +204,6 @@ exec guile $0
 (define (handle-wl_registry:global obj-id name interface version)
   ;; uint string uint
   ;;(sferr "global: name=~S interface=~S version=~S\n" name interface version)
-  (when (> name maxglob)
-    (set! maxglob name))
   (set! globals (cons interface globals))
   (hash-set! registry interface (vector name interface version)))
 
@@ -271,13 +265,65 @@ exec guile $0
   
 ;; --- zwp_linux_dmabuf
 
+(define (dmabuf:destroy obj-id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_dmabuf_v1:destroy obj-id rq-iobuf 0))))
+  
 (define (dmabuf:create_params obj-id params_id)
   (put-message rq-chan
     (lambda ()
       (encode-zwp_linux_dmabuf_v1:create_params
        obj-id rq-iobuf 0 params_id))))
 
+(define (handle-dmabuf:format obj-id name)
+  (sferr "dmabuf:format called\n"))
+  
+(define (handle-dmabuf:modifier obj-id format modifier_hi modifier_lo)
+  (sferr "dmabuf:modifier called\n"))
+  
+(define (dmabuf:get_default_feedback obj-id id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_dmabuf_v1:get_default_feedback obj-id rq-iobuf 0 id))))
+  
+(define (dmabuf:get_surface_feedback obj-id id surface)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_dmabuf_v1:get_surface_feedback
+       obj-id rq-iobuf 0 id surface))))
+  
 ;; dmabuf-params
+
+(define (dmabuf_params:destroy obj-id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_buffer_params_v1:destroy obj-id rq-iobuf 0))))
+
+(define (dmabuf_params:add obj-id fd plane_idx offset stride
+                           modifier_hi modifier_lo)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_buffer_params_v1:add
+       obj-id rq-iobuf 0 fd plane_idx offset stride modifier_hi modifier_lo))))
+
+(define (dmabuf_params:create obj-id width height format flags)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_buffer_params_v1:create
+       obj-id rq-iobuf 0 width height format flags))))
+
+(define (handle-dmabuf_params:created obj-id buffer)
+  (sferr "dmabuf_params:created called\n"))
+
+(define (handle-dmabuf_params:failed obj-id)
+  (sferr "dmabuf_params:failed called\n"))
+
+(define (dmabuf_params:create_immed obj-id buffer_id width height format flags)
+  (put-message rq-chan
+    (lambda ()
+      (encode-zwp_linux_buffer_params_v1:create_immed
+       obj-id rq-iobuf 0 buffer_id width height format flags))))
 
 ;; === appl ===========================
 
@@ -288,10 +334,17 @@ exec guile $0
 (define (install-handlers)
   (set-event-handler 'wl_display 'error handle-wl_display:error)
   (set-event-handler 'wl_display 'delete_id handle-wl_display:delete_id)
+
   (set-event-handler 'wl_registry 'global handle-wl_registry:global)
   (set-event-handler 'wl_registry 'global_remove
                      handle-wl_registry:global_remove)
+
+  ;; compositor
+
+  ;; drm
+
   (set-event-handler 'wl_shm 'format handle-wl_shm:format)
+
   (set-event-handler 'wl_output 'geometry handle-wl_output:geometry)
   (set-event-handler 'wl_output 'mode handle-wl_output:mode)
   (set-event-handler 'wl_output 'done handle-wl_output:done)
@@ -300,15 +353,19 @@ exec guile $0
   (set-event-handler 'wl_output 'name handle-wl_output:name)
   (set-event-handler 'wl_output 'description handle-wl_output:description)
 
-  ;; 0 is the null object
-  ;; 1: wl_display
-  ;; 2: wl_registry
+  (set-event-handler 'zwp_linux_dmabuf_v1 'format handle-dmabuf:format)
+  (set-event-handler 'zwp_linux_dmabuf_v1 'modifier handle-dmabuf:modifier)
+
+  (set-event-handler 'zwp_linux_buffer_params_v1 'created
+                     handle-dmabuf_params:created)
+  (set-event-handler 'zwp_linux_buffer_params_v1 'failed
+                     handle-dmabuf_params:failed)
+
+  ;; 0 is the null object; 1: wl_display
   (set-object-handler display-id 'wl_display)
   (set-object-handler registry-id 'wl_registry)
-  ;;(set-object-handler shm-id 'wl_shm)
-  ;;(set-object-handler output-id 'wl_output)
   
-  (*obj-count* starting-object-count))
+  (*obj-count* 3))
 
 (define* (setup-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
   (let* ((port (tmpfile))(fd (port->fdes port)))
@@ -404,6 +461,9 @@ exec guile $0
       (yield-current-task)
       (fsleep 0.1)
       (loop))))
+
+(define (get-registry)
+  (wl_display:get_registry display-id registry-id))
 
 (define done-cond #f)
 
