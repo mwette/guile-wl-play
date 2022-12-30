@@ -1,31 +1,31 @@
-;; wl-client-code.scm - from wayland.xml
+;; wayland-client.scm - from ../../proto/wayland.xml
 
-(define-public wayland-index-dict
-  '((wl_display . 0)
-    (wl_registry . 1)
-    (wl_callback . 2)
-    (wl_compositor . 3)
-    (wl_shm_pool . 4)
-    (wl_shm . 5)
-    (wl_buffer . 6)
-    (wl_data_offer . 7)
-    (wl_data_source . 8)
-    (wl_data_device . 9)
-    (wl_data_device_manager . 10)
-    (wl_shell . 11)
-    (wl_shell_surface . 12)
-    (wl_surface . 13)
-    (wl_seat . 14)
-    (wl_pointer . 15)
-    (wl_keyboard . 16)
-    (wl_touch . 17)
-    (wl_output . 18)
-    (wl_region . 19)
-    (wl_subcompositor . 20)
-    (wl_subsurface . 21)))
+(define-public wayland-iface-list
+  '(wl_display
+     wl_registry
+     wl_callback
+     wl_compositor
+     wl_shm_pool
+     wl_shm
+     wl_buffer
+     wl_data_offer
+     wl_data_source
+     wl_data_device
+     wl_data_device_manager
+     wl_shell
+     wl_shell_surface
+     wl_surface
+     wl_seat
+     wl_pointer
+     wl_keyboard
+     wl_touch
+     wl_output
+     wl_region
+     wl_subcompositor
+     wl_subsurface))
 
-(define-public wayland-opcode-dict-vec
-  #(((sync . 0) (get_registry . 1) (error . 0) (delete_id . 1))
+(define-public wayland-opcode-dict-list
+  '(((sync . 0) (get_registry . 1) (error . 0) (delete_id . 1))
     ((bind . 0) (global . 0) (global_remove . 1))
     ((done . 0))
     ((create_surface . 0) (create_region . 1))
@@ -47,6 +47,404 @@
     ((destroy . 0) (add . 1) (subtract . 2))
     ((destroy . 0) (get_subsurface . 1))
     ((destroy . 0) (set_position . 1) (place_above . 2) (place_below . 3) (set_sync . 4) (set_desync . 5))))
+
+(define wayland-decoder-vec-list
+  (list (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for error"
+            (let*-values
+              (((object_id ix) (dec-u32 bv ix))
+               ((code ix) (dec-u32 bv ix))
+               ((message ix) (dec-string bv ix)))
+              (values obj-id object_id code message)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for delete_id"
+            (let*-values
+              (((id ix) (dec-u32 bv ix)))
+              (values obj-id id))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for global"
+            (let*-values
+              (((name ix) (dec-u32 bv ix))
+               ((interface ix) (dec-string bv ix))
+               ((version ix) (dec-u32 bv ix)))
+              (values obj-id name interface version)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for global_remove"
+            (let*-values
+              (((name ix) (dec-u32 bv ix)))
+              (values obj-id name))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for done"
+            (let*-values
+              (((callback_data ix) (dec-u32 bv ix)))
+              (values obj-id callback_data))))
+        (vector)
+        (vector)
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for format"
+            (let*-values
+              (((format ix) (dec-u32 bv ix)))
+              (values obj-id format))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for release"
+            (let*-values () (values obj-id))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for offer"
+            (let*-values
+              (((mime_type ix) (dec-string bv ix)))
+              (values obj-id mime_type)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for source_actions"
+            (let*-values
+              (((source_actions ix) (dec-u32 bv ix)))
+              (values obj-id source_actions)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for action"
+            (let*-values
+              (((dnd_action ix) (dec-u32 bv ix)))
+              (values obj-id dnd_action))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for target"
+            (let*-values
+              (((mime_type ix) (dec-string bv ix)))
+              (values obj-id mime_type)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for send"
+            (let*-values
+              (((mime_type ix) (dec-string bv ix))
+               ((fd ix) (dec-fd cm)))
+              (values obj-id mime_type fd)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for cancelled"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for dnd_drop_performed"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for dnd_finished"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for action"
+            (let*-values
+              (((dnd_action ix) (dec-u32 bv ix)))
+              (values obj-id dnd_action))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for data_offer"
+            (let*-values
+              (((id ix) (dec-u32 bv ix)))
+              (values obj-id id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for enter"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((surface ix) (dec-u32 bv ix))
+               ((x ix) (dec-fixed bv ix))
+               ((y ix) (dec-fixed bv ix))
+               ((id ix) (dec-u32 bv ix)))
+              (values obj-id serial surface x y id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for leave"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for motion"
+            (let*-values
+              (((time ix) (dec-u32 bv ix))
+               ((x ix) (dec-fixed bv ix))
+               ((y ix) (dec-fixed bv ix)))
+              (values obj-id time x y)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for drop"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for selection"
+            (let*-values
+              (((id ix) (dec-u32 bv ix)))
+              (values obj-id id))))
+        (vector)
+        (vector)
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for ping"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix)))
+              (values obj-id serial)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for configure"
+            (let*-values
+              (((edges ix) (dec-u32 bv ix))
+               ((width ix) (dec-s32 bv ix))
+               ((height ix) (dec-s32 bv ix)))
+              (values obj-id edges width height)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for popup_done"
+            (let*-values () (values obj-id))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for enter"
+            (let*-values
+              (((output ix) (dec-u32 bv ix)))
+              (values obj-id output)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for leave"
+            (let*-values
+              (((output ix) (dec-u32 bv ix)))
+              (values obj-id output))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for capabilities"
+            (let*-values
+              (((capabilities ix) (dec-u32 bv ix)))
+              (values obj-id capabilities)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for name"
+            (let*-values
+              (((name ix) (dec-string bv ix)))
+              (values obj-id name))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for enter"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((surface ix) (dec-u32 bv ix))
+               ((surface_x ix) (dec-fixed bv ix))
+               ((surface_y ix) (dec-fixed bv ix)))
+              (values
+                obj-id
+                serial
+                surface
+                surface_x
+                surface_y)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for leave"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((surface ix) (dec-u32 bv ix)))
+              (values obj-id serial surface)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for motion"
+            (let*-values
+              (((time ix) (dec-u32 bv ix))
+               ((surface_x ix) (dec-fixed bv ix))
+               ((surface_y ix) (dec-fixed bv ix)))
+              (values obj-id time surface_x surface_y)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for button"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((time ix) (dec-u32 bv ix))
+               ((button ix) (dec-u32 bv ix))
+               ((state ix) (dec-u32 bv ix)))
+              (values obj-id serial time button state)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for axis"
+            (let*-values
+              (((time ix) (dec-u32 bv ix))
+               ((axis ix) (dec-u32 bv ix))
+               ((value ix) (dec-fixed bv ix)))
+              (values obj-id time axis value)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for frame"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for axis_source"
+            (let*-values
+              (((axis_source ix) (dec-u32 bv ix)))
+              (values obj-id axis_source)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for axis_stop"
+            (let*-values
+              (((time ix) (dec-u32 bv ix))
+               ((axis ix) (dec-u32 bv ix)))
+              (values obj-id time axis)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for axis_discrete"
+            (let*-values
+              (((axis ix) (dec-u32 bv ix))
+               ((discrete ix) (dec-s32 bv ix)))
+              (values obj-id axis discrete))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for keymap"
+            (let*-values
+              (((format ix) (dec-u32 bv ix))
+               ((fd ix) (dec-fd cm))
+               ((size ix) (dec-u32 bv ix)))
+              (values obj-id format fd size)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for enter"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((surface ix) (dec-u32 bv ix))
+               ((keys ix) (dec-array bv ix)))
+              (values obj-id serial surface keys)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for leave"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((surface ix) (dec-u32 bv ix)))
+              (values obj-id serial surface)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for key"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((time ix) (dec-u32 bv ix))
+               ((key ix) (dec-u32 bv ix))
+               ((state ix) (dec-u32 bv ix)))
+              (values obj-id serial time key state)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for modifiers"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((mods_depressed ix) (dec-u32 bv ix))
+               ((mods_latched ix) (dec-u32 bv ix))
+               ((mods_locked ix) (dec-u32 bv ix))
+               ((group ix) (dec-u32 bv ix)))
+              (values
+                obj-id
+                serial
+                mods_depressed
+                mods_latched
+                mods_locked
+                group)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for repeat_info"
+            (let*-values
+              (((rate ix) (dec-s32 bv ix))
+               ((delay ix) (dec-s32 bv ix)))
+              (values obj-id rate delay))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for down"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((time ix) (dec-u32 bv ix))
+               ((surface ix) (dec-u32 bv ix))
+               ((id ix) (dec-s32 bv ix))
+               ((x ix) (dec-fixed bv ix))
+               ((y ix) (dec-fixed bv ix)))
+              (values obj-id serial time surface id x y)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for up"
+            (let*-values
+              (((serial ix) (dec-u32 bv ix))
+               ((time ix) (dec-u32 bv ix))
+               ((id ix) (dec-s32 bv ix)))
+              (values obj-id serial time id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for motion"
+            (let*-values
+              (((time ix) (dec-u32 bv ix))
+               ((id ix) (dec-s32 bv ix))
+               ((x ix) (dec-fixed bv ix))
+               ((y ix) (dec-fixed bv ix)))
+              (values obj-id time id x y)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for frame"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for cancel"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for shape"
+            (let*-values
+              (((id ix) (dec-s32 bv ix))
+               ((major ix) (dec-fixed bv ix))
+               ((minor ix) (dec-fixed bv ix)))
+              (values obj-id id major minor)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for orientation"
+            (let*-values
+              (((id ix) (dec-s32 bv ix))
+               ((orientation ix) (dec-fixed bv ix)))
+              (values obj-id id orientation))))
+        (vector
+          (lambda (obj-id bv ix cm)
+            "event decoder for geometry"
+            (let*-values
+              (((x ix) (dec-s32 bv ix))
+               ((y ix) (dec-s32 bv ix))
+               ((physical_width ix) (dec-s32 bv ix))
+               ((physical_height ix) (dec-s32 bv ix))
+               ((subpixel ix) (dec-s32 bv ix))
+               ((make ix) (dec-string bv ix))
+               ((model ix) (dec-string bv ix))
+               ((transform ix) (dec-s32 bv ix)))
+              (values
+                obj-id
+                x
+                y
+                physical_width
+                physical_height
+                subpixel
+                make
+                model
+                transform)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for mode"
+            (let*-values
+              (((flags ix) (dec-u32 bv ix))
+               ((width ix) (dec-s32 bv ix))
+               ((height ix) (dec-s32 bv ix))
+               ((refresh ix) (dec-s32 bv ix)))
+              (values obj-id flags width height refresh)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for done"
+            (let*-values () (values obj-id)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for scale"
+            (let*-values
+              (((factor ix) (dec-s32 bv ix)))
+              (values obj-id factor)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for name"
+            (let*-values
+              (((name ix) (dec-string bv ix)))
+              (values obj-id name)))
+          (lambda (obj-id bv ix cm)
+            "event decoder for description"
+            (let*-values
+              (((description ix) (dec-string bv ix)))
+              (values obj-id description))))
+        (vector)
+        (vector)
+        (vector)))
+
+(define wayland-handler-vec-list
+  (list (make-vector 2)
+        (make-vector 2)
+        (make-vector 1)
+        (make-vector 0)
+        (make-vector 0)
+        (make-vector 1)
+        (make-vector 1)
+        (make-vector 3)
+        (make-vector 6)
+        (make-vector 6)
+        (make-vector 0)
+        (make-vector 0)
+        (make-vector 3)
+        (make-vector 2)
+        (make-vector 2)
+        (make-vector 9)
+        (make-vector 6)
+        (make-vector 7)
+        (make-vector 6)
+        (make-vector 0)
+        (make-vector 0)
+        (make-vector 0)))
+
+(add-iface-list wayland-iface-list)
+(add-opcode-dict-list wayland-opcode-dict-list)
+(add-decoder-vec-list wayland-decoder-vec-list)
+(add-handler-vec-list wayland-handler-vec-list)
 
 (define-public encode-wl_display:sync
   (lambda (obj-id bv ix callback)
@@ -88,6 +486,7 @@
         (bytevector-u32-native-set! bv ix obj-id)
         (bytevector-u16-native-set! bv (+ ix 6) msg-size)
         (bytevector-u16-native-set! bv (+ ix 4) 0)
+        (sferr "enc-bind: ix=~S msg-sz=~S ~A\n" ix msg-size (fmtbv/x bv 0 4 4))
         (values msg-size control)))))
 
 (define-public encode-wl_compositor:create_surface
@@ -930,400 +1329,5 @@
         (bytevector-u16-native-set! bv (+ ix 6) msg-size)
         (bytevector-u16-native-set! bv (+ ix 4) 5)
         (values msg-size control)))))
-
-(define-public wl-decoder-vec-vec
-  (vector
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for error"
-        (let*-values
-          (((object_id ix) (dec-u32 bv ix))
-           ((code ix) (dec-u32 bv ix))
-           ((message ix) (dec-string bv ix)))
-          (values obj-id object_id code message)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for delete_id"
-        (let*-values
-          (((id ix) (dec-u32 bv ix)))
-          (values obj-id id))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for global"
-        (let*-values
-          (((name ix) (dec-u32 bv ix))
-           ((interface ix) (dec-string bv ix))
-           ((version ix) (dec-u32 bv ix)))
-          (values obj-id name interface version)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for global_remove"
-        (let*-values
-          (((name ix) (dec-u32 bv ix)))
-          (values obj-id name))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for done"
-        (let*-values
-          (((callback_data ix) (dec-u32 bv ix)))
-          (values obj-id callback_data))))
-    (vector)
-    (vector)
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for format"
-        (let*-values
-          (((format ix) (dec-u32 bv ix)))
-          (values obj-id format))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for release"
-        (let*-values () (values obj-id))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for offer"
-        (let*-values
-          (((mime_type ix) (dec-string bv ix)))
-          (values obj-id mime_type)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for source_actions"
-        (let*-values
-          (((source_actions ix) (dec-u32 bv ix)))
-          (values obj-id source_actions)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for action"
-        (let*-values
-          (((dnd_action ix) (dec-u32 bv ix)))
-          (values obj-id dnd_action))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for target"
-        (let*-values
-          (((mime_type ix) (dec-string bv ix)))
-          (values obj-id mime_type)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for send"
-        (let*-values
-          (((mime_type ix) (dec-string bv ix))
-           ((fd ix) (dec-fd cm)))
-          (values obj-id mime_type fd)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for cancelled"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for dnd_drop_performed"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for dnd_finished"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for action"
-        (let*-values
-          (((dnd_action ix) (dec-u32 bv ix)))
-          (values obj-id dnd_action))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for data_offer"
-        (let*-values
-          (((id ix) (dec-u32 bv ix)))
-          (values obj-id id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for enter"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((surface ix) (dec-u32 bv ix))
-           ((x ix) (dec-fixed bv ix))
-           ((y ix) (dec-fixed bv ix))
-           ((id ix) (dec-u32 bv ix)))
-          (values obj-id serial surface x y id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for leave"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for motion"
-        (let*-values
-          (((time ix) (dec-u32 bv ix))
-           ((x ix) (dec-fixed bv ix))
-           ((y ix) (dec-fixed bv ix)))
-          (values obj-id time x y)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for drop"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for selection"
-        (let*-values
-          (((id ix) (dec-u32 bv ix)))
-          (values obj-id id))))
-    (vector)
-    (vector)
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for ping"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix)))
-          (values obj-id serial)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for configure"
-        (let*-values
-          (((edges ix) (dec-u32 bv ix))
-           ((width ix) (dec-s32 bv ix))
-           ((height ix) (dec-s32 bv ix)))
-          (values obj-id edges width height)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for popup_done"
-        (let*-values () (values obj-id))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for enter"
-        (let*-values
-          (((output ix) (dec-u32 bv ix)))
-          (values obj-id output)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for leave"
-        (let*-values
-          (((output ix) (dec-u32 bv ix)))
-          (values obj-id output))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for capabilities"
-        (let*-values
-          (((capabilities ix) (dec-u32 bv ix)))
-          (values obj-id capabilities)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for name"
-        (let*-values
-          (((name ix) (dec-string bv ix)))
-          (values obj-id name))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for enter"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((surface ix) (dec-u32 bv ix))
-           ((surface_x ix) (dec-fixed bv ix))
-           ((surface_y ix) (dec-fixed bv ix)))
-          (values
-            obj-id
-            serial
-            surface
-            surface_x
-            surface_y)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for leave"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((surface ix) (dec-u32 bv ix)))
-          (values obj-id serial surface)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for motion"
-        (let*-values
-          (((time ix) (dec-u32 bv ix))
-           ((surface_x ix) (dec-fixed bv ix))
-           ((surface_y ix) (dec-fixed bv ix)))
-          (values obj-id time surface_x surface_y)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for button"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((time ix) (dec-u32 bv ix))
-           ((button ix) (dec-u32 bv ix))
-           ((state ix) (dec-u32 bv ix)))
-          (values obj-id serial time button state)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for axis"
-        (let*-values
-          (((time ix) (dec-u32 bv ix))
-           ((axis ix) (dec-u32 bv ix))
-           ((value ix) (dec-fixed bv ix)))
-          (values obj-id time axis value)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for frame"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for axis_source"
-        (let*-values
-          (((axis_source ix) (dec-u32 bv ix)))
-          (values obj-id axis_source)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for axis_stop"
-        (let*-values
-          (((time ix) (dec-u32 bv ix))
-           ((axis ix) (dec-u32 bv ix)))
-          (values obj-id time axis)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for axis_discrete"
-        (let*-values
-          (((axis ix) (dec-u32 bv ix))
-           ((discrete ix) (dec-s32 bv ix)))
-          (values obj-id axis discrete))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for keymap"
-        (let*-values
-          (((format ix) (dec-u32 bv ix))
-           ((fd ix) (dec-fd cm))
-           ((size ix) (dec-u32 bv ix)))
-          (values obj-id format fd size)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for enter"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((surface ix) (dec-u32 bv ix))
-           ((keys ix) (dec-array bv ix)))
-          (values obj-id serial surface keys)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for leave"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((surface ix) (dec-u32 bv ix)))
-          (values obj-id serial surface)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for key"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((time ix) (dec-u32 bv ix))
-           ((key ix) (dec-u32 bv ix))
-           ((state ix) (dec-u32 bv ix)))
-          (values obj-id serial time key state)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for modifiers"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((mods_depressed ix) (dec-u32 bv ix))
-           ((mods_latched ix) (dec-u32 bv ix))
-           ((mods_locked ix) (dec-u32 bv ix))
-           ((group ix) (dec-u32 bv ix)))
-          (values
-            obj-id
-            serial
-            mods_depressed
-            mods_latched
-            mods_locked
-            group)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for repeat_info"
-        (let*-values
-          (((rate ix) (dec-s32 bv ix))
-           ((delay ix) (dec-s32 bv ix)))
-          (values obj-id rate delay))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for down"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((time ix) (dec-u32 bv ix))
-           ((surface ix) (dec-u32 bv ix))
-           ((id ix) (dec-s32 bv ix))
-           ((x ix) (dec-fixed bv ix))
-           ((y ix) (dec-fixed bv ix)))
-          (values obj-id serial time surface id x y)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for up"
-        (let*-values
-          (((serial ix) (dec-u32 bv ix))
-           ((time ix) (dec-u32 bv ix))
-           ((id ix) (dec-s32 bv ix)))
-          (values obj-id serial time id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for motion"
-        (let*-values
-          (((time ix) (dec-u32 bv ix))
-           ((id ix) (dec-s32 bv ix))
-           ((x ix) (dec-fixed bv ix))
-           ((y ix) (dec-fixed bv ix)))
-          (values obj-id time id x y)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for frame"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for cancel"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for shape"
-        (let*-values
-          (((id ix) (dec-s32 bv ix))
-           ((major ix) (dec-fixed bv ix))
-           ((minor ix) (dec-fixed bv ix)))
-          (values obj-id id major minor)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for orientation"
-        (let*-values
-          (((id ix) (dec-s32 bv ix))
-           ((orientation ix) (dec-fixed bv ix)))
-          (values obj-id id orientation))))
-    (vector
-      (lambda (obj-id bv ix cm)
-        "event decoder for geometry"
-        (let*-values
-          (((x ix) (dec-s32 bv ix))
-           ((y ix) (dec-s32 bv ix))
-           ((physical_width ix) (dec-s32 bv ix))
-           ((physical_height ix) (dec-s32 bv ix))
-           ((subpixel ix) (dec-s32 bv ix))
-           ((make ix) (dec-string bv ix))
-           ((model ix) (dec-string bv ix))
-           ((transform ix) (dec-s32 bv ix)))
-          (values
-            obj-id
-            x
-            y
-            physical_width
-            physical_height
-            subpixel
-            make
-            model
-            transform)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for mode"
-        (let*-values
-          (((flags ix) (dec-u32 bv ix))
-           ((width ix) (dec-s32 bv ix))
-           ((height ix) (dec-s32 bv ix))
-           ((refresh ix) (dec-s32 bv ix)))
-          (values obj-id flags width height refresh)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for done"
-        (let*-values () (values obj-id)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for scale"
-        (let*-values
-          (((factor ix) (dec-s32 bv ix)))
-          (values obj-id factor)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for name"
-        (let*-values
-          (((name ix) (dec-string bv ix)))
-          (values obj-id name)))
-      (lambda (obj-id bv ix cm)
-        "event decoder for description"
-        (let*-values
-          (((description ix) (dec-string bv ix)))
-          (values obj-id description))))
-    (vector)
-    (vector)
-    (vector)))
-
-(define-public (make-wl-handler-vec-vec)
-  (vector
-    (make-vector 2)
-    (make-vector 2)
-    (make-vector 1)
-    (make-vector 0)
-    (make-vector 0)
-    (make-vector 1)
-    (make-vector 1)
-    (make-vector 3)
-    (make-vector 6)
-    (make-vector 6)
-    (make-vector 0)
-    (make-vector 0)
-    (make-vector 3)
-    (make-vector 2)
-    (make-vector 2)
-    (make-vector 9)
-    (make-vector 6)
-    (make-vector 7)
-    (make-vector 6)
-    (make-vector 0)
-    (make-vector 0)
-    (make-vector 0)))
 
 ;; --- last line ---

@@ -1,0 +1,9 @@
+#!/bin/bash
+
+if [ -d code ]; then cd code; fi
+
+../scanner ../../proto/wayland.xml
+../scanner --nick=drm ../../proto/wayland-drm.xml
+../scanner --nick=dmabuf ../../proto/linux-dmabuf-unstable-v1.xml
+
+# --- last line ---
