@@ -88,6 +88,7 @@ exec guile $0
 (use-modules (system repl server))
 (use-modules (system repl coop-server))
 
+#|
 (define (make-counter init)
   (let ((box (make-atomic-box init)))
     (case-lambda
@@ -95,6 +96,17 @@ exec guile $0
             (let* ((cur (atomic-box-compare-and-swap! box exp (1+ exp))))
               (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
       ((val) (atomic-box-set! box val)))))
+|#
+(define* (make-counter #:optional (init 0))
+  (let ((box (make-atomic-box init)))
+    (lambda* (#:optional (inc 1))
+      (cond
+       ((positive? inc)
+        (let loop ((exp (atomic-box-ref box)))
+          (let* ((cur (atomic-box-compare-and-swap! box exp (1+ exp))))
+            (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
+       ((zero? inc)
+        (atomic-box-ref box))))))
 
 ;; ============================================================================
 
@@ -103,8 +115,9 @@ exec guile $0
 
 ;; number of objects 
 ;;(define *obj-count* (make-parameter 0))
-(define *obj-count* (make-counter 0))
+(define *obj-count* (make-counter 3))   ; 0: null, 1: display, 2: registry
 (define (obj-count++) (*obj-count*))
+(define (obj-count) (*obj-count* 0))
 
 ;; name -> id
 (define object-dict (make-hash-table 97))
@@ -122,6 +135,8 @@ exec guile $0
 (define null-id 0)
 (define display-id 1)
 (define registry-id 2)
+(define shm-id #f)
+(define shm-pool-id #f)
 
 ;; interface-name => #(name interface version)
 (define registry (make-hash-table))
@@ -199,7 +214,8 @@ exec guile $0
     (put-message rq-chan
       (lambda ()
         (encode-wl_registry:bind
-          registry-id rq-iobuf 0 name interface version my-id)))))
+         registry-id rq-iobuf 0 name interface version my-id)))
+    my-id))
 
 (define (handle-wl_registry:global obj-id name interface version)
   ;; uint string uint
@@ -210,18 +226,23 @@ exec guile $0
 (define (handle-wl_registry:global_remove obj-id name)
   (sferr "global_removed: ~S\n" name))
 
-#|
 ;; --- wl_shm_pool
 
-(define (wl_shm_pool:create_buffer id offset width height stride format)
+(define (wl_shm_pool:create_buffer obj-id id offset width height stride format)
   (put-message rq-chan
     (lambda ()
       (encode-wl_shm_pool:create_buffer
-       shm-pool-id rq-iobuf 0 id offset width height stride format))))
+       obj-id rq-iobuf 0 id offset width height stride format))))
 
-;; wl_shm_pool::destroy
-;; wl_shm_pool::resize
-|#
+(define (wl_shm_pool:destroy obj-id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-wl_shm_pool:destroy obj-id rq-iobuf 0))))
+
+(define (wl_shm_pool:resize obj-id size)
+  (put-message rq-chan
+    (lambda ()
+      (encode-wl_shm_pool:resize obj-id rq-iobuf 0 size))))
 
 ;; --- wl_shm
 
@@ -339,10 +360,6 @@ exec guile $0
   (set-event-handler 'wl_registry 'global_remove
                      handle-wl_registry:global_remove)
 
-  ;; compositor
-
-  ;; drm
-
   (set-event-handler 'wl_shm 'format handle-wl_shm:format)
 
   (set-event-handler 'wl_output 'geometry handle-wl_output:geometry)
@@ -361,21 +378,27 @@ exec guile $0
   (set-event-handler 'zwp_linux_buffer_params_v1 'failed
                      handle-dmabuf_params:failed)
 
-  ;; 0 is the null object; 1: wl_display
+  ;; 0 is the null object; 1: wl_display; 2: wl_registry
   (set-object-handler display-id 'wl_display)
   (set-object-handler registry-id 'wl_registry)
-  
-  (*obj-count* 3))
+  )
 
-(define* (setup-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
-  (let* ((port (tmpfile))(fd (port->fdes port)))
+(define (bind-shm)
+  (unless shm-id (set! shm-id (my-bind "wl_shm"))))
+
+(define* (create-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
+  (bind-shm)
+  (let* ((port (tmpfile))
+         (fd (port->fdes port))
+         (pool-id (obj-count++)))
     (guardian port)
-    (set! shm-fd fd)
     (truncate-file fd size)
     (set! shm-bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
-    ;;(set! shm-pool-id (obj-count++))
-    ;;(sferr "calling create_pool ~S ~S ~S\n" shm-pool-id fd size)
-    ;;(wl_shm:create_pool shm-pool-id fd size)
+    (set! shm-fd fd)
+    (set! shm-pool-id pool-id)
+    (sferr "calling create_pool ~S ~S ~S ~S\n" shm-id pool-id fd size)
+    (wl_shm:create_pool shm-id pool-id fd size)
+    (set-object-handler pool-id 'wl_shm_pool)
     ))
 
 ;; === agents ========================
