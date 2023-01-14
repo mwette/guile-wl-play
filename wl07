@@ -1,4 +1,5 @@
 #!/bin/bash
+#|
 # -*- scheme -*-
 # wl07 - wayland client in fibers
 # telnet localhost 37146
@@ -11,10 +12,17 @@ GUILE_LOAD_PATH=$NYACC_DIR/examples:$NYACC_DIR/module
 GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
 export GUILE_LOAD_PATH
 
-#exec gdb --args guile $0
-exec guile $0
+GDB_PFX=""
+if [ $# -gt 0 ]; then
+    case "$1" in
+    --debug) GDB_PFX="gdb --args"; shift ;;
+    esac
+fi
+
+exec $GDB_PFX guile $0
+|#
 !#
-;; Copyright (C) 2022 Matthew Wette
+;; Copyright (C) 2022-2023 Matthew Wette
 ;;
 ;; This library is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU Lesser General Public
@@ -39,6 +47,7 @@ exec guile $0
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
 (use-modules (ice-9 atomic))
+(use-modules (srfi srfi-9))
 
 (use-modules (wl-client))
 (use-modules (sockmsg))
@@ -46,35 +55,6 @@ exec guile $0
 (use-modules (ice-9 pretty-print))
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 (define (pperr exp) (pretty-print exp (current-error-port)))
-
-;; ============================================================================
-
-#|
-
-;; drm_magic_g -> unsigned-int
-;; drm_auth_t -> struct { drm_magic_t magic; }
-;;(define (get-drm-magic fd)
-;;  (let ((magic )
-
-(define ioctl
-  (let ((f (pointer->procedure
-            int
-            (dynamic-func "ioctl" (dynamic-link))
-            (list int unsigned-long '*))))
-    (lambda (fd request addr)
-      (f fd request addr))))
-
-(define (get-drm-auth fd) ;; =>
-  (let* ((szof (ffi:sizeof unsigned-long))
-         (temp (make-bytevector szof))
-         (addr (bytevector->pointer temp)))
-    (ioctl fd DRM_IOCTL_GET_MAGIC (bytevector->pointer temp))
-    (ioctl fd DRM_IOCTL_AUTH_MAGIC (bytevector->pointer temp))
-    (case szof
-      ((4) (bytevector-i32-native-ref temp 0))
-      ((8) (bytevector-i64-native-ref temp 0))
-      (else (error "setup-drm")))))
-|#     
 
 ;; ============================================================================
 
@@ -94,8 +74,8 @@ exec guile $0
     (case-lambda
       (() (let loop ((exp (atomic-box-ref box)))
             (let* ((cur (atomic-box-compare-and-swap! box exp (1+ exp))))
-              (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
-      ((val) (atomic-box-set! box val)))))
+(if (eq? cur exp) cur (loop (atomic-box-ref box))))))
+((val) (atomic-box-set! box val)))))
 |#
 (define* (make-counter #:optional (init 0))
   (let ((box (make-atomic-box init)))
@@ -113,45 +93,64 @@ exec guile $0
 ;; per-interface vectors of handlers by opcode
 (define my-handler-vec-vec (make-wl-handler-vec-vec))
 
+(define obj-vec-sz 1000)
+
+;; vector of object-id => ref into wl-decoder-vec (decoder by opcode)
+(define object-decoders-vec (make-vector obj-vec-sz #f))
+
+;; vector of object-id => ref into wl-handler-vec (handler by opcode)
+(define object-handlers-vec (make-vector obj-vec-sz #f))
+
+;; vector of objec-id => user-defined value
+(define object-value-vec (make-vector obj-vec-sz #f))
+
 ;; number of objects 
-;;(define *obj-count* (make-parameter 0))
-(define *obj-count* (make-counter 3))   ; 0: null, 1: display, 2: registry
+;; must prealloc 0: null; 1: display
+(define *obj-count* (make-counter 3))
 (define (obj-count++) (*obj-count*))
 (define (obj-count) (*obj-count* 0))
 
-;; name -> id
-(define object-dict (make-hash-table 97))
+(define alloc-id
+  (let* ((box (make-atomic-box 2))
+         (inc (lambda (id) (let ((id (1+ id))) (if (>= id obj-vec-sz) 2 id))))
+         (ret (lambda (id) (vector-set! object-value-vec id #t) id)))
+    (vector-set! object-value-vec 0 #t)
+    (vector-set! object-value-vec 1 #t)
+    (lambda ()
+      (let loop ((exp (atomic-box-ref box)))
+        (let* ((cur (atomic-box-compare-and-swap! box exp (inc exp))))
+          (if (eq? cur exp)
+              (if (vector-ref object-value-vec cur) (alloc-id) (ret cur))
+              (loop (atomic-box-ref box))))))))
 
-;; vector of object-id => ref into wl-decoder-vec (decoder by opcode)
-(define object-decoders-vec (make-vector 1000))
-
-;; vector of object-id => ref into wl-handler-vec (handler by opcode)
-(define object-handlers-vec (make-vector 1000))
-
-;; vector of objec-id => user-defined value
-(define object-value-vec (make-vector 1000))
+;; name -> id, for globals only
+(define globals-dict (make-hash-table 97))
 
 ;; pre-defined object ids
 (define null-id 0)
 (define display-id 1)
 (define registry-id 2)
 (define shm-id #f)
-(define shm-pool-id #f)
 
 ;; interface-name => #(name interface version)
 (define registry (make-hash-table))
 
-(define (set-object-handler obj-id obj-name)
-  (let* ((ob-indx obj-id)
-         (ob-name (if (string? obj-name) (string->symbol obj-name) obj-name))
-         (if-indx (assq-ref wl-index-dict ob-name))
+;; set-object!
+(define* (set-object! obj-id obj-iface #:optional (obj-value #t))
+  (let* ((ob-indx obj-id) (if-name obj-iface)
+         (if-name (if (string? if-name) (string->symbol if-name) if-name))
+         (if-indx (assq-ref wl-index-dict if-name))
          (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
          (if-handlers (vector-ref my-handler-vec-vec if-indx)))
     (vector-set! object-decoders-vec ob-indx if-decoders)
-    (vector-set! object-handlers-vec ob-indx if-handlers)))
+    (vector-set! object-handlers-vec ob-indx if-handlers)
+    (vector-set! object-value-vec ob-indx obj-value)))
 
-;; set-event-handler 'wl_displaly 'get_registry proc => prev-proc
-(define (set-event-handler interface event proc)
+(define (set-object-value! obj-id obj-value)
+  (vector-set! object-value-vec obj-id obj-value))
+
+;; set-event-handler! 'wl_displaly 'get_registry proc => prev-proc
+(define (set-event-handler! interface event proc)
   (let* ((if-indx (assq-ref wl-index-dict interface))
          (opcode (assq-ref (vector-ref wl-opcode-dict-vec if-indx) event))
          (if-handlers (vector-ref my-handler-vec-vec if-indx))
@@ -181,6 +180,7 @@ exec guile $0
 
 ;; --- wl_display
 
+;; note: callback (new-id) can only be used once :(
 (define (wl_display:sync obj-id callback)
   (put-message rq-chan
     (lambda () (encode-wl_display:sync obj-id rq-iobuf 0 callback))))
@@ -195,22 +195,24 @@ exec guile $0
 
 ;; wl_display:delete_id
 (define (handle-wl_display:delete_id obj-id id)
+  ;;(vector-set! object-handlers-vec id #f)
+  (vector-set! object-value-vec id #f)
   (sferr "delete-id: ~S\n" id))
 
 ;; --- wl_registry
 
 (define globals '())
 
-(define (my-bind interface)
+(define (bind-global interface)
   (let* ((info (hash-ref registry interface))
          (name (vector-ref info 0))
          (version (vector-ref info 2))
          (my-id (obj-count++))
          (my-sy (string->symbol interface)))
-    (sferr "my-bind ~S: name=~S version=~S my-id=~S\n"
+    (sferr "bind-global ~S: name=~S version=~S my-id=~S\n"
            interface name version my-id)
-    (hashq-set! object-dict my-sy my-id)
-    (set-object-handler my-id my-sy)
+    (hashq-set! globals-dict my-sy my-id)
+    (set-object! my-id my-sy)
     (put-message rq-chan
       (lambda ()
         (encode-wl_registry:bind
@@ -226,6 +228,12 @@ exec guile $0
 (define (handle-wl_registry:global_remove obj-id name)
   (sferr "global_removed: ~S\n" name))
 
+;; --- wl_callback
+
+(define (handle-wl_callback:done obj-id callback-data)
+  ;; callback-data is event serial generated by compositor
+  (sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data))
+   
 ;; --- wl_shm_pool
 
 (define (wl_shm_pool:create_buffer obj-id id offset width height stride format)
@@ -259,6 +267,16 @@ exec guile $0
   ;; format is uint enum format
   ;; (sferr "format ~A\n" format)
   (set! formats (cons format formats)))
+
+;; --- wl_buffer
+
+(define (wl_buffer:destroy obj-id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-wl_buffer:destroy obj-id rq-iobuf 0))))
+
+(define (handle-wl_buffer:release obj-id)
+  (sferr "buffer:release done\n"))
 
 ;; --- wl_output
 
@@ -348,59 +366,88 @@ exec guile $0
 
 ;; === appl ===========================
 
-(define guardian (make-guardian))
-(define shm-fd #f)
-(define shm-bv #f)
+;;(define guardian (make-guardian))
+;;(define shm-fd #f)
+;;(define shm-bv #f)
 
 (define (install-handlers)
-  (set-event-handler 'wl_display 'error handle-wl_display:error)
-  (set-event-handler 'wl_display 'delete_id handle-wl_display:delete_id)
+  (set-event-handler! 'wl_display 'error handle-wl_display:error)
+  (set-event-handler! 'wl_display 'delete_id handle-wl_display:delete_id)
 
-  (set-event-handler 'wl_registry 'global handle-wl_registry:global)
-  (set-event-handler 'wl_registry 'global_remove
-                     handle-wl_registry:global_remove)
+  (set-event-handler! 'wl_registry 'global handle-wl_registry:global)
+  (set-event-handler! 'wl_registry 'global_remove
+                      handle-wl_registry:global_remove)
 
-  (set-event-handler 'wl_shm 'format handle-wl_shm:format)
+  (set-event-handler! 'wl_callback 'done handle-wl_callback:done)
+  
+  (set-event-handler! 'wl_shm 'format handle-wl_shm:format)
 
-  (set-event-handler 'wl_output 'geometry handle-wl_output:geometry)
-  (set-event-handler 'wl_output 'mode handle-wl_output:mode)
-  (set-event-handler 'wl_output 'done handle-wl_output:done)
-  (set-event-handler 'wl_output 'scale handle-wl_output:scale)
-  (set-event-handler 'wl_output 'release handle-wl_output:release)
-  (set-event-handler 'wl_output 'name handle-wl_output:name)
-  (set-event-handler 'wl_output 'description handle-wl_output:description)
+  (set-event-handler! 'wl_buffer 'release handle-wl_buffer:release)
 
-  (set-event-handler 'zwp_linux_dmabuf_v1 'format handle-dmabuf:format)
-  (set-event-handler 'zwp_linux_dmabuf_v1 'modifier handle-dmabuf:modifier)
+  (set-event-handler! 'wl_output 'geometry handle-wl_output:geometry)
+  (set-event-handler! 'wl_output 'mode handle-wl_output:mode)
+  (set-event-handler! 'wl_output 'done handle-wl_output:done)
+  (set-event-handler! 'wl_output 'scale handle-wl_output:scale)
+  (set-event-handler! 'wl_output 'release handle-wl_output:release)
+  (set-event-handler! 'wl_output 'name handle-wl_output:name)
+  (set-event-handler! 'wl_output 'description handle-wl_output:description)
 
-  (set-event-handler 'zwp_linux_buffer_params_v1 'created
-                     handle-dmabuf_params:created)
-  (set-event-handler 'zwp_linux_buffer_params_v1 'failed
-                     handle-dmabuf_params:failed)
+  (set-event-handler! 'zwp_linux_dmabuf_v1 'format handle-dmabuf:format)
+  (set-event-handler! 'zwp_linux_dmabuf_v1 'modifier handle-dmabuf:modifier)
+
+  (set-event-handler! 'zwp_linux_buffer_params_v1 'created
+                      handle-dmabuf_params:created)
+  (set-event-handler! 'zwp_linux_buffer_params_v1 'failed
+                      handle-dmabuf_params:failed)
 
   ;; 0 is the null object; 1: wl_display; 2: wl_registry
-  (set-object-handler display-id 'wl_display)
-  (set-object-handler registry-id 'wl_registry)
-  )
+  (set-object! display-id 'wl_display)
+  (set-object! registry-id 'wl_registry))
 
 (define (bind-shm)
-  (unless shm-id (set! shm-id (my-bind "wl_shm"))))
+  (unless shm-id (set! shm-id (bind-global "wl_shm"))))
+
+(define (sync-and-wait)
+  #f
+  )
+
+(define-record-type <shm-pool>
+  (make-shm-pool port fd size bv)
+  shm-pool?
+  (port shm-pool-port)
+  (fd shm-pool-fd)
+  (size shm-pool-size)
+  (bv shm-pool-bv))
 
 (define* (create-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
   (bind-shm)
-  (let* ((port (tmpfile))
+  (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))
-         (pool-id (obj-count++)))
-    (guardian port)
-    (truncate-file fd size)
-    (set! shm-bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
-    (set! shm-fd fd)
-    (set! shm-pool-id pool-id)
-    (sferr "calling create_pool ~S ~S ~S ~S\n" shm-id pool-id fd size)
+         (pool-id (obj-count++))
+         (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+         (shm-pool (and bv (make-shm-pool port fd size bv))))
+    (sferr "filename=~S\n" (port-filename port))
+    (sferr "create_pool size ~S => ~S\n" size pool-id)
+    (vector-set! object-value-vec pool-id shm-pool)
+    (set-object! pool-id 'wl_shm_pool shm-pool)
     (wl_shm:create_pool shm-id pool-id fd size)
-    (set-object-handler pool-id 'wl_shm_pool)
-    ))
+    ;; FIXME: should add a sync, w/ callback to set-object-value
+    pool-id))
 
+(define (create-buffer pool-id offset width height)
+  ;; use stride 4*width, format ARGB8888=0
+  (let* ((id (obj-count++)))
+    (sferr "create buffer\n")
+    (wl_shm_pool:create_buffer pool-id id offset width height (* width 4) 0)
+    (set-object! id 'wl_buffer)
+    id))
+
+(sferr "tryit HANGS :(  -- asynchronous dummy!\n")
+(define (tryit)
+  (let* ((pool-id (create-buffer-pool))
+         (buf-id (create-buffer pool-id 0 500 300)))
+    buf-id))
+  
 ;; === agents ========================
 
 (define wl-sock #f)
