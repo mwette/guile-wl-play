@@ -77,6 +77,8 @@ exec $GDB_PFX guile $0
 (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
 ((val) (atomic-box-set! box val)))))
 |#
+
+#|
 (define* (make-counter #:optional (init 0))
   (let ((box (make-atomic-box init)))
     (lambda* (#:optional (inc 1))
@@ -87,6 +89,13 @@ exec $GDB_PFX guile $0
             (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
        ((zero? inc)
         (atomic-box-ref box))))))
+;; number of objects 
+;; must prealloc 0: null; 1: display
+(define *obj-count* (make-counter 3))
+(define (obj-count++) (*obj-count*))
+(define (obj-count) (*obj-count* 0))
+|#
+
 
 ;; ============================================================================
 
@@ -103,12 +112,6 @@ exec $GDB_PFX guile $0
 
 ;; vector of objec-id => user-defined value
 (define object-value-vec (make-vector obj-vec-sz #f))
-
-;; number of objects 
-;; must prealloc 0: null; 1: display
-(define *obj-count* (make-counter 3))
-(define (obj-count++) (*obj-count*))
-(define (obj-count) (*obj-count* 0))
 
 (define alloc-id
   (let* ((box (make-atomic-box 2))
@@ -207,7 +210,7 @@ exec $GDB_PFX guile $0
   (let* ((info (hash-ref registry interface))
          (name (vector-ref info 0))
          (version (vector-ref info 2))
-         (my-id (obj-count++))
+         (my-id (alloc-id))
          (my-sy (string->symbol interface)))
     (sferr "bind-global ~S: name=~S version=~S my-id=~S\n"
            interface name version my-id)
@@ -423,7 +426,7 @@ exec $GDB_PFX guile $0
   (bind-shm)
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))
-         (pool-id (obj-count++))
+         (pool-id (alloc-id))
          (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
          (shm-pool (and bv (make-shm-pool port fd size bv))))
     (sferr "filename=~S\n" (port-filename port))
@@ -436,7 +439,7 @@ exec $GDB_PFX guile $0
 
 (define (create-buffer pool-id offset width height)
   ;; use stride 4*width, format ARGB8888=0
-  (let* ((id (obj-count++)))
+  (let* ((id (alloc-id)))
     (sferr "create buffer\n")
     (wl_shm_pool:create_buffer pool-id id offset width height (* width 4) 0)
     (set-object! id 'wl_buffer)
