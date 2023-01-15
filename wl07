@@ -38,64 +38,34 @@ exec $GDB_PFX guile $0
 ;; along with this library; if not, see <http://www.gnu.org/licenses/>.
 
 ;; TODO
-;; 1 add a layer somehow to callers don't need to pass rq-iobuf 0
+;; 1 add a layer somehow so callers don't need to pass rq-iobuf 0
 ;;   need a way to block the sender until a number of messages have
 ;;   built up
-;; 2 figure out how to really use kernel polling so guile doesn't
-;;   run at 100% all the time
+;; 2 figure out how to really use kernel polling so we don't need
+;;   to call sleep or watch guile run at 100% all the time
+;; 3 add sync mech: send sync, wait for done
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
 (use-modules (ice-9 atomic))
 (use-modules (srfi srfi-9))
 
+(define sys-sleep sleep)
+
 (use-modules (wl-client))
 (use-modules (sockmsg))
 
-(use-modules (ice-9 pretty-print))
-(define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
-(define (pperr exp) (pretty-print exp (current-error-port)))
-
-;; ============================================================================
-
-(define sys-sleep sleep)
+(use-modules (system repl server))
+(use-modules (system repl coop-server))
 
 (use-modules ((fibers) #:renamer (lambda (s) (if (eq? s 'sleep) 'fsleep s))))
 (use-modules (fibers scheduler))
 (use-modules (fibers conditions))
 (use-modules (fibers channels))
 
-(use-modules (system repl server))
-(use-modules (system repl coop-server))
-
-#|
-(define (make-counter init)
-  (let ((box (make-atomic-box init)))
-    (case-lambda
-      (() (let loop ((exp (atomic-box-ref box)))
-            (let* ((cur (atomic-box-compare-and-swap! box exp (1+ exp))))
-(if (eq? cur exp) cur (loop (atomic-box-ref box))))))
-((val) (atomic-box-set! box val)))))
-|#
-
-#|
-(define* (make-counter #:optional (init 0))
-  (let ((box (make-atomic-box init)))
-    (lambda* (#:optional (inc 1))
-      (cond
-       ((positive? inc)
-        (let loop ((exp (atomic-box-ref box)))
-          (let* ((cur (atomic-box-compare-and-swap! box exp (1+ exp))))
-            (if (eq? cur exp) cur (loop (atomic-box-ref box))))))
-       ((zero? inc)
-        (atomic-box-ref box))))))
-;; number of objects 
-;; must prealloc 0: null; 1: display
-(define *obj-count* (make-counter 3))
-(define (obj-count++) (*obj-count*))
-(define (obj-count) (*obj-count* 0))
-|#
-
+(use-modules (ice-9 pretty-print))
+(define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
+(define (pperr exp) (pretty-print exp (current-error-port)))
 
 ;; ============================================================================
 
@@ -367,11 +337,7 @@ exec $GDB_PFX guile $0
       (encode-zwp_linux_buffer_params_v1:create_immed
        obj-id rq-iobuf 0 buffer_id width height format flags))))
 
-;; === appl ===========================
-
-;;(define guardian (make-guardian))
-;;(define shm-fd #f)
-;;(define shm-bv #f)
+;; --- install
 
 (define (install-handlers)
   (set-event-handler! 'wl_display 'error handle-wl_display:error)
@@ -401,11 +367,128 @@ exec $GDB_PFX guile $0
   (set-event-handler! 'zwp_linux_buffer_params_v1 'created
                       handle-dmabuf_params:created)
   (set-event-handler! 'zwp_linux_buffer_params_v1 'failed
-                      handle-dmabuf_params:failed)
+                      handle-dmabuf_params:failed))
 
-  ;; 0 is the null object; 1: wl_display; 2: wl_registry
+(define (init-obj-pool)
   (set-object! display-id 'wl_display)
   (set-object! registry-id 'wl_registry))
+  
+;; === agents ========================
+
+(define io-debug #f)
+
+(define wl-sock #f)
+
+(define socket-path
+  (let ((dir (getenv "XDG_RUNTIME_DIR"))
+	(dpy (getenv "WAYLAND_DISPLAY")))
+    (and dir dpy (string-append dir "/" dpy))))
+
+(define (connect-display)
+  (let* ((path socket-path)
+         (style (logior SOCK_STREAM SOCK_CLOEXEC))
+         (sock (socket PF_UNIX style 0))
+         (conn (connect sock AF_UNIX path)))
+    ;;(setvbuf sock 'none)
+    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
+    (set! rq-iobuf (make-bytevector 1024))
+    (set! ev-iobuf (make-bytevector 1024))
+    sock))
+
+(define (sender)
+  (sferr "sender starting ...\n")
+  (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
+    (fsleep 0.01)
+    (cond
+     ((positive? n-left)
+      (sferr "send message @~S\n" n-sent)
+      (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
+      (if cm (sferr "  w/ fd ~A\n" (dec-fd cm))
+      (catch #t
+        (lambda ()
+          (when io-debug (sferr "sending ~S bytes\n" n-left))
+          (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
+            ;;(force-output wl-sock)
+            (loop (+ n-sent n) (- n-left n) #f rqq)))
+        (lambda (key . args) (sferr "sender error\n")))))
+     ((pair? rqq)
+      (call-with-values (car rqq) 
+        (lambda (ln cm)
+          (when io-debug (sferr "sending msg  ln ~S  cm ~S\n" ln cm))
+          (loop 0 ln cm (cdr rqq)))))
+     ((get-message rq-chan) =>
+      (lambda (req)
+        (when io-debug (sferr "queue to send after ~S\n" (length rqq)))
+        (loop n-sent n-left cm (cons req rqq))))
+     (else
+      (sferr "sender says wtf\n")))))
+
+(define (receiver)
+  (sferr "receiver starting ...\n")
+  (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
+    (fsleep 0.01)
+    ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
+    (cond
+     ((< n-have msg-size)
+      (catch 'system-error
+        (lambda ()
+          (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
+                 (n-read (vector-ref res 0))
+                 (control (or control (vector-ref res 1)))
+                 (flags (vector-ref res 2)))
+            (when io-debug (sferr "recv ~S bytes\n" n-read))
+            (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
+            (loop (+ n-have n-read) object-id msg-size opcode control)))
+        (lambda (key . args) (sferr "receiver error\n"))))
+     ((not object-id)
+      (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
+             (word1 (bytevector-u32-native-ref ev-iobuf 4))
+             (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
+             (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
+        (loop n-have object-id msg-size opcode control)))
+     (else
+      (when io-debug (sferr "dispatch ~S ~S\n" object-id opcode))
+      (dispatch object-id opcode ev-iobuf 8 control)
+      (if (> n-have msg-size)
+          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
+      (loop (- n-have msg-size) #f 8 opcode control)))))
+
+(define (monitor)
+  (sferr "monitor starting ...\n")
+  (let* ((server (spawn-coop-repl-server)))
+    (let loop ()
+      (poll-coop-repl-server server)
+      (yield-current-task)
+      (fsleep 0.1)
+      (loop))))
+
+(define (get-registry)
+  (wl_display:get_registry display-id registry-id))
+
+(define done-cond #f)
+
+(define (done)
+  (and done-cond (signal-condition! done-cond)))
+
+(define (appl-main)
+  (run-fibers
+   (lambda ()
+     (set! wl-sock (connect-display))
+     (set! done-cond (make-condition))
+     (set! rq-chan (make-channel))
+     (install-handlers)
+     (init-obj-pool)
+     ;;
+     (spawn-fiber receiver)
+     (spawn-fiber sender)
+     (get-registry) (fsleep 1)
+     ;;
+     (spawn-fiber monitor)
+     (wait done-cond)
+     (close-port wl-sock))
+   #:hz 0 #:install-suspendable-ports? #f))
+
+;; === appl ===========================
 
 (define (bind-shm)
   (unless shm-id (set! shm-id (bind-global "wl_shm"))))
@@ -450,113 +533,7 @@ exec $GDB_PFX guile $0
   (let* ((pool-id (create-buffer-pool))
          (buf-id (create-buffer pool-id 0 500 300)))
     buf-id))
-  
-;; === agents ========================
 
-(define wl-sock #f)
-
-(define socket-path
-  (let ((dir (getenv "XDG_RUNTIME_DIR"))
-	(dpy (getenv "WAYLAND_DISPLAY")))
-    (and dir dpy (string-append dir "/" dpy))))
-
-(define (connect-display)
-  (let* ((path socket-path)
-         (style (logior SOCK_STREAM SOCK_CLOEXEC))
-         (sock (socket PF_UNIX style 0))
-         (conn (connect sock AF_UNIX path)))
-    ;;(setvbuf sock 'none)
-    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
-    (set! rq-iobuf (make-bytevector 1024))
-    (set! ev-iobuf (make-bytevector 1024))
-    sock))
-
-(define (sender)
-  (sferr "sender starting ...\n")
-  (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
-    (fsleep 0.01)
-    (cond
-     ((positive? n-left)
-      (sferr "send message @~S\n" n-sent)
-      (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
-      (if cm (sferr " fd ~A\n" (dec-fd cm))
-      (catch #t
-        (lambda ()
-          (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
-            ;;(force-output wl-sock)
-            (loop (+ n-sent n) (- n-left n) #f rqq)))
-        (lambda (key . args) (sferr "sender error\n")))))
-     ((pair? rqq)
-      (call-with-values (car rqq) 
-        (lambda (ln cm)
-          (sferr "sending msg  ln ~S  cm ~S\n" ln cm)
-          (loop 0 ln cm (cdr rqq)))))
-     ((get-message rq-chan) =>
-      (lambda (req)
-        (loop n-sent n-left cm (cons req rqq))))
-     (else
-      (sferr "sender says wtf\n")))))
-
-(define (receiver)
-  (sferr "receiver starting ...\n")
-  (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
-    (fsleep 0.01)
-    ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
-    (cond
-     ((< n-have msg-size)
-      (catch 'system-error
-        (lambda ()
-          (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
-                 (n-read (vector-ref res 0))
-                 (control (or control (vector-ref res 1)))
-                 (flags (vector-ref res 2)))
-            (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
-            (loop (+ n-have n-read) object-id msg-size opcode control)))
-        (lambda (key . args) (sferr "receiver error\n"))))
-     ((not object-id)
-      (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
-             (word1 (bytevector-u32-native-ref ev-iobuf 4))
-             (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
-             (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
-        (loop n-have object-id msg-size opcode control)))
-     (else
-      ;;(sferr "dispatch ~S ~S\n" object-id opcode)
-      (dispatch object-id opcode ev-iobuf 8 control)
-      (if (> n-have msg-size)
-          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
-      (loop (- n-have msg-size) #f 8 opcode control)))))
-
-(define (monitor)
-  (sferr "monitor starting ...\n")
-  (let* ((server (spawn-coop-repl-server)))
-    (let loop ()
-      (poll-coop-repl-server server)
-      (yield-current-task)
-      (fsleep 0.1)
-      (loop))))
-
-(define (get-registry)
-  (wl_display:get_registry display-id registry-id))
-
-(define done-cond #f)
-
-(define (done)
-  (and done-cond (signal-condition! done-cond)))
-
-(run-fibers
- (lambda ()
-   (set! wl-sock (connect-display))
-   (set! done-cond (make-condition))
-   (set! rq-chan (make-channel))
-   (install-handlers)
-   ;;
-   (spawn-fiber receiver)
-   (spawn-fiber sender)
-   (get-registry) (fsleep 1)
-   ;;
-   (spawn-fiber monitor)
-   (wait done-cond)
-   (close-port wl-sock))
- #:hz 0 #:install-suspendable-ports? #f)
+(appl-main)
 
 ;; --- last line ---
