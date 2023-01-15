@@ -486,7 +486,6 @@
         (bytevector-u32-native-set! bv ix obj-id)
         (bytevector-u16-native-set! bv (+ ix 6) msg-size)
         (bytevector-u16-native-set! bv (+ ix 4) 0)
-        (sferr "enc-bind: ix=~S msg-sz=~S ~A\n" ix msg-size (fmtbv/x bv 0 4 4))
         (values msg-size control)))))
 
 (define-public encode-wl_compositor:create_surface

@@ -530,7 +530,7 @@ exec $GDB_PFX guile $0
 
 ;;(sferr "tryit HANGS :(  -- asynchronous dummy!\n")
 (define (tryit)
-  (let* ((pool-id (create-buffer-pool))
+  (let* ((pool-id (let ((id (create-buffer-pool))) (sync-and-wait) id))
          (buf-id (create-buffer pool-id 0 500 300)))
     buf-id))
 
