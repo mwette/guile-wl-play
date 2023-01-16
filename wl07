@@ -147,20 +147,39 @@ exec $GDB_PFX guile $0
 
 ;; ====================================
 
+(eval-when (expand load eval)
+  (define (gen-id x . args)
+    (define (any->str obj)
+      (if (string? obj) obj (symbol->string (syntax->datum obj))))
+    (datum->syntax x (string->symbol (string-join (map any->str args) "")))))
+
+(define-syntax define-wl-request
+  (lambda (x)
+    (syntax-case x ()
+      ((_ iface meth arg ...)
+       #`(define (#,(gen-id x #'iface ":" #'meth) obj-id arg ...)
+           (put-message rq-chan
+             (lambda ()
+               (#,(gen-id x "encode-" #'iface ":" #'meth)
+                obj-id rq-iobuf 0 arg ...))))))))
+
+(define-syntax wl-event
+  (lambda (x)
+    (syntax-case x ()
+      ((_ iface meth)
+       #`(set-event-handler! 'iface 'meth
+                             #,(gen-id x "handle-" #'iface ":" #'meth))))))
+
+;; ====================================
+
 (define rq-chan #f)                     ; channel for issuing requests
 (define rq-iobuf #f)
 (define ev-iobuf #f)
 
 ;; --- wl_display
 
-;; note: callback (new-id) can only be used once :(
-(define (wl_display:sync obj-id callback)
-  (put-message rq-chan
-    (lambda () (encode-wl_display:sync obj-id rq-iobuf 0 callback))))
-
-(define (wl_display:get_registry obj-id registry)
-  (put-message rq-chan
-    (lambda () (encode-wl_display:get_registry obj-id rq-iobuf 0 registry))))
+(define-wl-request wl_display sync callback)
+(define-wl-request wl_display get_registry registry)
 
 ;; wl_display:error
 (define (handle-wl_display:error obj-id object_id code message)
@@ -208,50 +227,80 @@ exec $GDB_PFX guile $0
   (let ((val (vector-ref object-value-vec obj-id)))
     (if (condition? val) (signal-condition! val)))
   (sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data))
-   
+
+;; --- wl_compositor
+
+(define-wl-request wl_compositor create_surface id)
+(define-wl-request wl_compositor create_region id)
+
 ;; --- wl_shm_pool
 
-(define (wl_shm_pool:create_buffer obj-id id offset width height stride format)
-  (put-message rq-chan
-    (lambda ()
-      (encode-wl_shm_pool:create_buffer
-       obj-id rq-iobuf 0 id offset width height stride format))))
-
-(define (wl_shm_pool:destroy obj-id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-wl_shm_pool:destroy obj-id rq-iobuf 0))))
-
-(define (wl_shm_pool:resize obj-id size)
-  (put-message rq-chan
-    (lambda ()
-      (encode-wl_shm_pool:resize obj-id rq-iobuf 0 size))))
+(define-wl-request wl_shm_pool create_buffer
+  id offset width height stride format)
+(define-wl-request wl_shm_pool destroy)
+(define-wl-request wl_shm_pool resize size)
 
 ;; --- wl_shm
 
-;; formats: argb8888 = 0, xrgb8888 = 1
+(define-wl-request wl_shm create_pool id fd size)
 
-(define (wl_shm:create_pool obj-id id fd size)
-  (put-message rq-chan
-    (lambda () (encode-wl_shm:create_pool obj-id rq-iobuf 0 id fd size))))
-
-;; informs of allowed formats
+;; informs of allowed formats (argb8888 = 0, xrgb8888 = 1)
 (define formats '())
 
 (define (handle-wl_shm:format obj-id format)
-  ;; format is uint enum format
-  ;; (sferr "format ~A\n" format)
   (set! formats (cons format formats)))
 
 ;; --- wl_buffer
 
-(define (wl_buffer:destroy obj-id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-wl_buffer:destroy obj-id rq-iobuf 0))))
+(define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
   (sferr "buffer:release done\n"))
+
+;; --- wl_data_offer
+
+;; --- wl_data_source
+
+;; --- wl_data_device
+
+;; --- wl_data_device_manager
+
+;; --- wl_shell
+
+;; --- wl_shell_surface
+
+;; --- wl_surface
+
+(define-wl-request wl_surface destroy)
+(define-wl-request wl_surface attach buffer x y)
+(define-wl-request wl_surface damage x y width height)
+(define-wl-request wl_surface frame callback)
+(define-wl-request wl_surface set_opaque_region region)
+(define-wl-request wl_surface set_input_region region)
+(define-wl-request wl_surface commit)
+
+(define (handle-wl_surface:enter obj-id output) #f)
+(define (handle-wl_surface:leave obj-id output) #f)
+
+(define-wl-request wl_surface set_buffer_transform transform)
+(define-wl-request wl_surface set_buffer_scale scale)
+(define-wl-request wl_surface damage_buffer x y width height)
+(define-wl-request wl_surface offset x y)
+
+;; --- wl_seat
+
+(define-wl-request wl_seat get_pointer id)
+(define-wl-request wl_seat get_keyboard id)
+(define-wl-request wl_seat get_touch id)
+(define-wl-request wl_seat release)
+
+(define (handle-wl_seat:name obj-id name) #f)
+
+;; --- wl_pointer
+
+;; --- wl_keyboard
+
+;; --- wl_touch
 
 ;; --- wl_output
 
@@ -277,123 +326,99 @@ exec $GDB_PFX guile $0
 (define (handle-wl_output:description . args)
   (sferr "output::description called\n"))
   
-;; --- xdg-shell
+;; --- wl_region
 
-(define (xdg_wm_base:destroy obj-id)
-  #t)
+;; --- wl_subcompositor
 
-(define (xdg_wm_base:create_positioner obj-id id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-xdg_wm_base:create_positioner obj-id rq-iobuf 0 id))))
+;; --- wl_subsurface
 
-;; ...
+;; --- xdg_wm_base
 
-(define (xdg_wm_base:pong obj-id serial)
-  (put-message rq-chan
-    (lambda ()
-      (encode-xdg_wm_base:pong obj-id rq-iobuf 0 serial))))
+(define-wl-request xdg_wm_base destroy)
+(define-wl-request xdg_wm_base create_positioner id)
+(define-wl-request xdg_wm_base get_xdg_surface id surface)
+(define-wl-request xdg_wm_base pong serial)
 
 (define (handle-xdg_wm_base:ping obj-id serial)
   (xdg_wm_base:pong obj-id serial))
 
-;; --- zwp_linux_dmabuf
+;; --- xdg_positioner
 
-(define (dmabuf:destroy obj-id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_dmabuf_v1:destroy obj-id rq-iobuf 0))))
-  
-(define (dmabuf:create_params obj-id params_id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_dmabuf_v1:create_params
-       obj-id rq-iobuf 0 params_id))))
+(define-wl-request xdg_positioner destroy)
+(define-wl-request xdg_positioner set_size width height)
+(define-wl-request xdg_positioner set_anchor_rect x y width height)
+(define-wl-request xdg_positioner set_gravity gravity)
+(define-wl-request xdg_positioner set_constraint_adjustment
+  constraint_adjustment)
+(define-wl-request xdg_positioner set_offset x y)
+(define-wl-request xdg_positioner set_reactive)
+(define-wl-request xdg_positioner set_parent_size parent_width parent_height)
+(define-wl-request xdg_positioner set_parent_configure serial)
 
-(define (handle-dmabuf:format obj-id name)
-  (sferr "dmabuf:format called\n"))
-  
-(define (handle-dmabuf:modifier obj-id format modifier_hi modifier_lo)
-  (sferr "dmabuf:modifier called\n"))
-  
-(define (dmabuf:get_default_feedback obj-id id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_dmabuf_v1:get_default_feedback obj-id rq-iobuf 0 id))))
-  
-(define (dmabuf:get_surface_feedback obj-id id surface)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_dmabuf_v1:get_surface_feedback
-       obj-id rq-iobuf 0 id surface))))
-  
-;; dmabuf-params
+;; --- xdg_surface
 
-(define (dmabuf_params:destroy obj-id)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_buffer_params_v1:destroy obj-id rq-iobuf 0))))
+(define-wl-request xdg_surface destroy)
+(define-wl-request xdg_surface get_toplevel id)
+(define-wl-request xdg_surface get_popup id parent positioner)
+(define-wl-request xdg_surface set_window_geometry x y width height)
+(define-wl-request xdg_surface ack_configure serial)
+            
+(define (handle-xdg_surface:configure obj-id serial)
+  (sferr "todo: handle xdg_surface:configure\n"))
 
-(define (dmabuf_params:add obj-id fd plane_idx offset stride
-                           modifier_hi modifier_lo)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_buffer_params_v1:add
-       obj-id rq-iobuf 0 fd plane_idx offset stride modifier_hi modifier_lo))))
+;; --- xdg_toplevel
 
-(define (dmabuf_params:create obj-id width height format flags)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_buffer_params_v1:create
-       obj-id rq-iobuf 0 width height format flags))))
+(define-wl-request xdg_toplevel destroy)
+(define-wl-request xdg_toplevel set_parent parent)
+(define-wl-request xdg_toplevel set_title title)
+(define-wl-request xdg_toplevel set_app_id app_id)
+(define-wl-request xdg_toplevel show_window_menu seat serial x y)
+(define-wl-request xdg_toplevel move seat serial)
+(define-wl-request xdg_toplevel resize seat serial edges)
+(define-wl-request xdg_toplevel set_max_size width height)
+(define-wl-request xdg_toplevel set_min_size width height)
+(define-wl-request xdg_toplevel set_maximized)
+(define-wl-request xdg_toplevel unset_maximized)
+(define-wl-request xdg_toplevel set_fullscreen method framerate output)
+(define-wl-request xdg_toplevel unset_fullscreen)
+(define-wl-request xdg_toplevel set_minimized)
 
-(define (handle-dmabuf_params:created obj-id buffer)
-  (sferr "dmabuf_params:created called\n"))
+(define (handle-xdg_toplevel:configure obj-id width height states) #f)
 
-(define (handle-dmabuf_params:failed obj-id)
-  (sferr "dmabuf_params:failed called\n"))
+(define (handle-xdg_toplevel:close obj-id width height states) #f)
 
-(define (dmabuf_params:create_immed obj-id buffer_id width height format flags)
-  (put-message rq-chan
-    (lambda ()
-      (encode-zwp_linux_buffer_params_v1:create_immed
-       obj-id rq-iobuf 0 buffer_id width height format flags))))
+(define (handle-xdg_toplevel:configure_bounds obj-id width height) #f)
+
+;; --- xdg_popup
+
 
 ;; --- install
 
 (define (install-handlers)
-  (set-event-handler! 'wl_display 'error handle-wl_display:error)
-  (set-event-handler! 'wl_display 'delete_id handle-wl_display:delete_id)
+  (wl-event wl_display error)
+  (wl-event wl_display delete_id)
+  (wl-event wl_registry global)
+  (wl-event wl_registry global_remove)
+  (wl-event wl_callback done)
+  (wl-event wl_shm format)
+  (wl-event wl_buffer release)
+  (wl-event wl_buffer release)
+  (wl-event wl_surface enter)
+  (wl-event wl_surface leave)
+  (wl-event wl_seat name)
+  (wl-event wl_output geometry)
+  (wl-event wl_output mode)
+  (wl-event wl_output done)
+  (wl-event wl_output scale)
+  (wl-event wl_output release)
+  (wl-event wl_output name)
+  (wl-event wl_output description)
 
-  (set-event-handler! 'wl_registry 'global handle-wl_registry:global)
-  (set-event-handler! 'wl_registry 'global_remove
-                      handle-wl_registry:global_remove)
-
-  (set-event-handler! 'wl_callback 'done handle-wl_callback:done)
-  
-  (set-event-handler! 'wl_shm 'format handle-wl_shm:format)
-
-  (set-event-handler! 'wl_buffer 'release handle-wl_buffer:release)
-
-  (set-event-handler! 'wl_output 'geometry handle-wl_output:geometry)
-  (set-event-handler! 'wl_output 'mode handle-wl_output:mode)
-  (set-event-handler! 'wl_output 'done handle-wl_output:done)
-  (set-event-handler! 'wl_output 'scale handle-wl_output:scale)
-  (set-event-handler! 'wl_output 'release handle-wl_output:release)
-  (set-event-handler! 'wl_output 'name handle-wl_output:name)
-  (set-event-handler! 'wl_output 'description handle-wl_output:description)
-
-  (when (defined? 'shell-iface-list)
-    (set-event-handler! 'xdg_wm_base 'ping handle-xdg_wm_base:ping))
-
-  (when (defined? 'xx)
-    (set-event-handler! 'zwp_linux_dmabuf_v1 'format handle-dmabuf:format)
-    (set-event-handler! 'zwp_linux_dmabuf_v1 'modifier handle-dmabuf:modifier)
-
-    (set-event-handler! 'zwp_linux_buffer_params_v1 'created
-                        handle-dmabuf_params:created)
-    (set-event-handler! 'zwp_linux_buffer_params_v1 'failed
-                        handle-dmabuf_params:failed))
+  (wl-event xdg_wm_base ping)
+  (wl-event xdg_surface configure)
+  (wl-event xdg_toplevel configure)
+  (wl-event xdg_toplevel close)
+  (wl-event xdg_toplevel configure_bounds)
 
   (if #f #f))
 
@@ -452,7 +477,7 @@ exec $GDB_PFX guile $0
 (define (receiver)
   (sferr "receiver starting ...\n")
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
-    (fsleep 0.01)
+    (fsleep 0.01) ;; SLEEP HERE
     ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
      ((< n-have msg-size)
@@ -562,7 +587,6 @@ exec $GDB_PFX guile $0
     (set-object! id 'wl_buffer)
     id))
 
-;;(sferr "tryit HANGS :(  -- asynchronous dummy!\n")
 (define (tryit)
 
   (let* ((pool-id (let ((id (create-buffer-pool))) (sync-and-wait) id))

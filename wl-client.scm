@@ -170,7 +170,8 @@
   (set! all-handler-vec-list (cons handler-vec-list all-handler-vec-list)))
 
 (include-from-path "code/wayland-client.scm")
-(include-from-path "code/linux-dmabuf-unstable-v1-client.scm")
+(include-from-path "code/xdg-shell-client.scm")
+;;(include-from-path "code/linux-dmabuf-unstable-v1-client.scm")
 
 (define wl-index-dict #f)
 (define wl-opcode-dict-vec #f)
