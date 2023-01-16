@@ -375,7 +375,6 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_surface ack_configure serial)
             
 (define (handle-xdg_surface:configure obj-id serial)
-  (wl_surface:commit obj-id)
   (xdg_surface:ack_configure obj-id serial)
   (sferr "todo: fixup xdg_surface:configure\n")
   #t)
@@ -459,7 +458,7 @@ exec $GDB_PFX guile $0
 (define (init-globals)
   (unless shm-id (set! shm-id (bind-global "wl_shm")))
   (unless comp-id (set! comp-id (bind-global "wl_compositor")))
-  ;;(unless base-id (set! base-id (bind-global "xdg_wm_base")))
+  (unless base-id (set! base-id (bind-global "xdg_wm_base")))
   #t)
 
 ;; === agents ========================
@@ -649,13 +648,16 @@ exec $GDB_PFX guile $0
     #t)
 
   (set! my-xsrf-id (let ((id (alloc-id)))
+                     (sferr "id=~S\n" id)
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
                      id))
+  #|
   (sync-and-wait)
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
                      id))
   (sync-and-wait)
+  |#
 
   (if #f #f))
 
