@@ -277,6 +277,26 @@ exec $GDB_PFX guile $0
 (define (handle-wl_output:description . args)
   (sferr "output::description called\n"))
   
+;; --- xdg-shell
+
+(define (xdg_wm_base:destroy obj-id)
+  #t)
+
+(define (xdg_wm_base:create_positioner obj-id id)
+  (put-message rq-chan
+    (lambda ()
+      (encode-xdg_wm_base:create_positioner obj-id rq-iobuf 0 id))))
+
+;; ...
+
+(define (xdg_wm_base:pong obj-id serial)
+  (put-message rq-chan
+    (lambda ()
+      (encode-xdg_wm_base:pong obj-id rq-iobuf 0 serial))))
+
+(define (handle-xdg_wm_base:ping obj-id serial)
+  (xdg_wm_base:pong obj-id serial))
+
 ;; --- zwp_linux_dmabuf
 
 (define (dmabuf:destroy obj-id)
@@ -363,13 +383,19 @@ exec $GDB_PFX guile $0
   (set-event-handler! 'wl_output 'name handle-wl_output:name)
   (set-event-handler! 'wl_output 'description handle-wl_output:description)
 
-  (set-event-handler! 'zwp_linux_dmabuf_v1 'format handle-dmabuf:format)
-  (set-event-handler! 'zwp_linux_dmabuf_v1 'modifier handle-dmabuf:modifier)
+  (when (defined? 'shell-iface-list)
+    (set-event-handler! 'xdg_wm_base 'ping handle-xdg_wm_base:ping))
 
-  (set-event-handler! 'zwp_linux_buffer_params_v1 'created
-                      handle-dmabuf_params:created)
-  (set-event-handler! 'zwp_linux_buffer_params_v1 'failed
-                      handle-dmabuf_params:failed))
+  (when (defined? 'xx)
+    (set-event-handler! 'zwp_linux_dmabuf_v1 'format handle-dmabuf:format)
+    (set-event-handler! 'zwp_linux_dmabuf_v1 'modifier handle-dmabuf:modifier)
+
+    (set-event-handler! 'zwp_linux_buffer_params_v1 'created
+                        handle-dmabuf_params:created)
+    (set-event-handler! 'zwp_linux_buffer_params_v1 'failed
+                        handle-dmabuf_params:failed))
+
+  (if #f #f))
 
 (define (init-object-pool)
   (set-object! display-id 'wl_display)
@@ -490,6 +516,13 @@ exec $GDB_PFX guile $0
 
 ;; === appl ===========================
 
+(use-modules (system ffi-help-rt))
+(use-modules (ffi cairo))
+
+(define my-pool-id #f)
+(define my-buf-id #f)
+(define my-buf-bv #f)
+
 (define (bind-shm)
   (unless shm-id (set! shm-id (bind-global "wl_shm"))))
 
@@ -518,6 +551,7 @@ exec $GDB_PFX guile $0
     (vector-set! object-value-vec pool-id shm-pool)
     (set-object! pool-id 'wl_shm_pool shm-pool)
     (wl_shm:create_pool shm-id pool-id fd size)
+    (set! my-buf-bv bv)
     pool-id))
 
 (define (create-buffer pool-id offset width height)
@@ -530,9 +564,30 @@ exec $GDB_PFX guile $0
 
 ;;(sferr "tryit HANGS :(  -- asynchronous dummy!\n")
 (define (tryit)
+
   (let* ((pool-id (let ((id (create-buffer-pool))) (sync-and-wait) id))
          (buf-id (create-buffer pool-id 0 500 300)))
-    buf-id))
+    (set! my-pool-id pool-id)
+    (set! my-buf-id buf-id))
+
+  (let* ((width 500) (height 300) (stride (* width 4))
+         (srf (cairo_image_surface_create_for_data
+               my-buf-bv 'CAIRO_FORMAT_ARGB32 width height stride))
+         (cro (cairo_create srf))
+         (extents (make-cairo_text_extents_t))
+         (text "Hello, world!")
+         )
+    (cairo_select_font_face cro "Sans"
+                            'CAIRO_FONT_SLANT_NORMAL
+                            'CAIRO_FONT_WEIGHT_NORMAL)
+    (cairo_set_font_size cro 32.0)
+    (cairo_text_extents cro text (pointer-to extents))
+    (cairo_move_to cro 20.0 20.0)
+    (cairo_show_text cro text)
+     
+    #f)
+
+  #f)
 
 (appl-main)
 
