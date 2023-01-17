@@ -103,7 +103,7 @@
          (ln-1 (1- ln)))
     (bytevector-u32-native-set! bv ix ln)
     (bytevector-copy! (string->utf8 str) 0 bv (+ ix 4) ln-1)
-    (bytevector-u8-set! bv (+ ix 4 ln) 0)
+    (bytevector-u8-set! bv (+ ix 4 ln-1) 0)
     (* (quotient (+ ix 4 ln 3) 4) 4)))
 
 (define (dec-string bv ix) ;; => values str ix
@@ -170,7 +170,8 @@
   (set! all-handler-vec-list (cons handler-vec-list all-handler-vec-list)))
 
 (include-from-path "code/wayland-client.scm")
-(include-from-path "code/linux-dmabuf-unstable-v1-client.scm")
+(include-from-path "code/xdg-shell-client.scm")
+;;(include-from-path "code/linux-dmabuf-unstable-v1-client.scm")
 
 (define wl-index-dict #f)
 (define wl-opcode-dict-vec #f)

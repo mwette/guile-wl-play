@@ -1,16 +1,16 @@
 ;; linux-dmabuf-unstable-v1-client.scm - from ../../proto/linux-dmabuf-unstable-v1.xml
 
-(define-public dmabuf-iface-list
+(define-public linux-dmabuf-iface-list
   '(zwp_linux_dmabuf_v1
      zwp_linux_buffer_params_v1
      zwp_linux_dmabuf_feedback_v1))
 
-(define-public dmabuf-opcode-dict-list
+(define-public linux-dmabuf-opcode-dict-list
   '(((destroy . 0) (create_params . 1) (format . 0) (modifier . 1) (get_default_feedback . 2) (get_surface_feedback . 3))
     ((destroy . 0) (add . 1) (create . 2) (created . 0) (failed . 1) (create_immed . 3))
     ((destroy . 0) (done . 0) (format_table . 1) (main_device . 2) (tranche_done . 3) (tranche_target_device . 4) (tranche_formats . 5) (tranche_flags . 6))))
 
-(define dmabuf-decoder-vec-list
+(define linux-dmabuf-decoder-vec-list
   (list (vector
           (lambda (obj-id bv ix cm)
             "event decoder for format"
@@ -67,15 +67,15 @@
               (((flags ix) (dec-u32 bv ix)))
               (values obj-id flags))))))
 
-(define dmabuf-handler-vec-list
+(define linux-dmabuf-handler-vec-list
   (list (make-vector 2)
         (make-vector 2)
         (make-vector 7)))
 
-(add-iface-list dmabuf-iface-list)
-(add-opcode-dict-list dmabuf-opcode-dict-list)
-(add-decoder-vec-list dmabuf-decoder-vec-list)
-(add-handler-vec-list dmabuf-handler-vec-list)
+(add-iface-list linux-dmabuf-iface-list)
+(add-opcode-dict-list linux-dmabuf-opcode-dict-list)
+(add-decoder-vec-list linux-dmabuf-decoder-vec-list)
+(add-handler-vec-list linux-dmabuf-handler-vec-list)
 
 (define-public encode-zwp_linux_dmabuf_v1:destroy
   (lambda (obj-id bv ix)

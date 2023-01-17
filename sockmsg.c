@@ -18,8 +18,7 @@
  *
  */
 
-
-/* v221006a 
+/* v230115b
 
 cmsgl is #(level type bv-data)
 
@@ -196,12 +195,12 @@ SCM_DEFINE(scm_sendmsg, "sendmsg", 4, 2, 0,
   ix = scm_to_size_t (start);
   ln = scm_to_size_t (count);
 
-  if (scm_bytevector_p (iobuf)) {
+  if (SCM_BYTEVECTOR_P (iobuf)) {
     nio = 1;
     mh.msg_iov = alloca (nio*sizeof (struct iovec));
     mh.msg_iov[0].iov_base = SCM_BYTEVECTOR_CONTENTS (iobuf) + ix;
     mh.msg_iov[0].iov_len = ln;
-  } else if (scm_vector_p (iobuf)) {
+  } else if (scm_is_vector (iobuf)) {
     nio = scm_c_vector_length (iobuf);
     mh.msg_iov = alloca (nio*sizeof(struct iovec));
     bv = scm_c_vector_ref (iobuf, 0);
@@ -217,25 +216,23 @@ SCM_DEFINE(scm_sendmsg, "sendmsg", 4, 2, 0,
       ln -= ni;
     }
   } else {
-    ; // error
+    scm_misc_error ("sendmsg", "iobuf value unrecognized", SCM_EOL);
   }
   mh.msg_iovlen = nio;
-     
-  if (SCM_UNBNDP (control)) {
+
+  if (SCM_UNBNDP (control) || (control == SCM_BOOL_F)) {
     mh.msg_control = NULL;
     mh.msg_controllen = 0;
-  } else if (control == SCM_BOOL_F) {
-    mh.msg_control = NULL;
-    mh.msg_controllen = 0;
-  } else if (scm_pair_p (control)) {
+  } else if (scm_is_pair (control)) {
     bv = scm_cmsg_list_to_bytevector (control);
     mh.msg_control = SCM_BYTEVECTOR_CONTENTS (bv);
     mh.msg_controllen = SCM_BYTEVECTOR_LENGTH (bv);
-  } else if (scm_bytevector_p (control)) {
-    mh.msg_control = NULL;
-    mh.msg_controllen = 0;
+  } else if (SCM_BYTEVECTOR_P (control)) {
+    bv = control;
+    mh.msg_control = SCM_BYTEVECTOR_CONTENTS (bv);
+    mh.msg_controllen = SCM_BYTEVECTOR_LENGTH (bv);
   } else {
-    ;
+    scm_misc_error ("sendmsg", "control value unrecognized", SCM_EOL);
   }
 
   mh.msg_flags = 0;			/* ignored */
@@ -285,26 +282,29 @@ SCM_DEFINE(scm_recvmsg_x, "recvmsg!", 2, 2, 0,
   else
     ix = scm_to_size_t (start);
   
-  if (scm_bytevector_p (iobuf)) {
-    nio = 1;
-    mh.msg_iov = alloca (nio*sizeof(struct iovec));
-    mh.msg_iov[0].iov_base = (char*)SCM_BYTEVECTOR_CONTENTS (iobuf) + ix;
-    mh.msg_iov[0].iov_len = SCM_BYTEVECTOR_LENGTH (iobuf) - ix;
-    
-  } else if (scm_vector_p (iobuf)) {
-    nio = scm_c_vector_length (iobuf);
-    mh.msg_iov = alloca (nio*sizeof(struct iovec));
-    bv = scm_c_vector_ref (iobuf, i);
-    mh.msg_iov[0].iov_base = SCM_BYTEVECTOR_CONTENTS (bv) + ix;
-    mh.msg_iov[0].iov_len = SCM_BYTEVECTOR_LENGTH (bv) - ix;
-    for (i = 1; i < nio; i++) {
-      bv = scm_c_vector_ref (iobuf, i);
-      mh.msg_iov[i].iov_base = SCM_BYTEVECTOR_CONTENTS (bv);
-      mh.msg_iov[i].iov_len = SCM_BYTEVECTOR_LENGTH (bv);
+  if (SCM_BYTEVECTOR_P (iobuf))
+    {
+      nio = 1;
+      mh.msg_iov = alloca (nio*sizeof(struct iovec));
+      mh.msg_iov[0].iov_base = (char*)SCM_BYTEVECTOR_CONTENTS (iobuf) + ix;
+      mh.msg_iov[0].iov_len = SCM_BYTEVECTOR_LENGTH (iobuf) - ix;
     }
-  } else {
-    ; // error
-  }
+  else if (scm_is_vector (iobuf))
+    {
+      nio = scm_c_vector_length (iobuf);
+      mh.msg_iov = alloca (nio*sizeof(struct iovec));
+      bv = scm_c_vector_ref (iobuf, i);
+      mh.msg_iov[0].iov_base = SCM_BYTEVECTOR_CONTENTS (bv) + ix;
+      mh.msg_iov[0].iov_len = SCM_BYTEVECTOR_LENGTH (bv) - ix;
+      for (i = 1; i < nio; i++) {
+	bv = scm_c_vector_ref (iobuf, i);
+	mh.msg_iov[i].iov_base = SCM_BYTEVECTOR_CONTENTS (bv);
+	mh.msg_iov[i].iov_len = SCM_BYTEVECTOR_LENGTH (bv);
+      }
+    }
+  else
+    scm_misc_error ("recvmsg!", "control value unrecognized", SCM_EOL);
+
   mh.msg_iovlen = nio;
 
   mh.msg_control = alloca (512);	/* arbitrary size */
@@ -318,21 +318,23 @@ SCM_DEFINE(scm_recvmsg_x, "recvmsg!", 2, 2, 0,
     fl = scm_to_int (flags);
 
   SCM_SYSCALL (rv = recvmsg(fd, &mh, fl));
-  if (rv == -1) {
-    if ((errno == EAGAIN) || (errno == EWOULDBLOCK))
-      rv = 0;
-    else 
-      SCM_SYSERROR;
-  }
+  if (rv == -1)
+    {
+      if ((errno == EAGAIN) || (errno == EWOULDBLOCK))
+	rv = 0;
+      else 
+	SCM_SYSERROR;
+    }
   iolen = scm_from_int (rv);
 
-  if (mh.msg_controllen > 0) {
-    control = scm_c_make_bytevector (mh.msg_controllen);
-    memcpy (SCM_BYTEVECTOR_CONTENTS (control),
-	    mh.msg_control, mh.msg_controllen);
-  } else {
+  if (mh.msg_controllen > 0)
+    {
+      control = scm_c_make_bytevector (mh.msg_controllen);
+      memcpy (SCM_BYTEVECTOR_CONTENTS (control),
+	      mh.msg_control, mh.msg_controllen);
+    }
+  else
     control = SCM_BOOL_F;
-  }
 
   res = scm_c_make_vector (3, SCM_BOOL_F);
   scm_c_vector_set_x (res, 0, iolen);
