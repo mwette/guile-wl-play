@@ -123,6 +123,7 @@ exec $GDB_PFX guile $0
          (if-indx (assq-ref wl-index-dict if-name))
          (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
          (if-handlers (vector-ref my-handler-vec-vec if-indx)))
+    (sferr "~S: ~S\n" obj-id obj-iface)
     (vector-set! object-decoders-vec ob-indx if-decoders)
     (vector-set! object-handlers-vec ob-indx if-handlers)
     (vector-set! object-value-vec ob-indx obj-value)))
@@ -195,7 +196,7 @@ exec $GDB_PFX guile $0
 
 ;; wl_display:delete_id
 (define (handle-wl_display:delete_id obj-id id)
-  (sferr "delete-id: ~S\n" id)
+  (sferr "delete_id ~S\n" id)
   ;;(vector-set! object-handlers-vec id #f)
   (vector-set! object-value-vec id #f)
   #f)
@@ -266,7 +267,10 @@ exec $GDB_PFX guile $0
 (define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
-  (sferr "buffer:release NEEDS WORK\n"))
+  (wl_buffer:destroy obj-id)
+  ;;(object-set! obj-id #f #f)
+  (vector-set! object-value-vec obj-id #f)
+  )
 
 ;; --- wl_data_offer
 
@@ -289,14 +293,18 @@ exec $GDB_PFX guile $0
 (define-wl-request wl_surface set_opaque_region region)
 (define-wl-request wl_surface set_input_region region)
 (define-wl-request wl_surface commit)
-
-(define (handle-wl_surface:enter obj-id output) #f)
-(define (handle-wl_surface:leave obj-id output) #f)
-
 (define-wl-request wl_surface set_buffer_transform transform)
 (define-wl-request wl_surface set_buffer_scale scale)
 (define-wl-request wl_surface damage_buffer x y width height)
 (define-wl-request wl_surface offset x y)
+
+(define (handle-wl_surface:enter obj-id output)
+  (sferr "wl_surface:enter\n")
+  #f)
+
+(define (handle-wl_surface:leave obj-id output)
+  (sferr "wl_surface:leave\n")
+  #f)
 
 ;; --- wl_seat
 
@@ -305,7 +313,9 @@ exec $GDB_PFX guile $0
 (define-wl-request wl_seat get_touch id)
 (define-wl-request wl_seat release)
 
-(define (handle-wl_seat:name obj-id name) #f)
+(define (handle-wl_seat:name obj-id name)
+  (sferr "wl_seat:name\n")
+  #f)
 
 ;; --- wl_pointer
 
@@ -351,6 +361,7 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_wm_base pong serial)
 
 (define (handle-xdg_wm_base:ping obj-id serial)
+  (sferr "xdg_wm_base:ping -> pong\n")
   (xdg_wm_base:pong obj-id serial))
 
 ;; --- xdg_positioner
@@ -376,9 +387,13 @@ exec $GDB_PFX guile $0
             
 (define (handle-xdg_surface:configure obj-id serial)
   (sferr "configure ...\n")
+  (fsleep 0.5)
   (xdg_surface:ack_configure obj-id serial)
   (let ((obj (vector-ref object-value-vec obj-id)))
-    (if (procedure? obj) (obj obj-id)))
+    (when (procedure? obj)
+      (sferr "calling proc\n")
+      (obj obj-id)
+      ))
   )
 
 ;; --- xdg_toplevel
@@ -398,11 +413,14 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_toplevel unset_fullscreen)
 (define-wl-request xdg_toplevel set_minimized)
 
-(define (handle-xdg_toplevel:configure obj-id width height states) #f)
+(define (handle-xdg_toplevel:configure obj-id width height states)
+  (sferr "toplevel:configure \n"))
+ 
+(define (handle-xdg_toplevel:close obj-id width height states)
+  (sferr "toplevel:close\n"))
 
-(define (handle-xdg_toplevel:close obj-id width height states) #f)
-
-(define (handle-xdg_toplevel:configure_bounds obj-id width height) #f)
+(define (handle-xdg_toplevel:configure_bounds obj-id width height)
+  (sferr "toplevel:config_bounds\n"))
 
 ;; --- xdg_popup
 
@@ -517,16 +535,13 @@ exec $GDB_PFX guile $0
     ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
      ((< n-have msg-size)
-      (catch 'system-error
-        (lambda ()
-          (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
-                 (n-read (vector-ref res 0))
-                 (control (or control (vector-ref res 1)))
-                 (flags (vector-ref res 2)))
-            (when io-debug (if (positive? n-read) (sferr "recv ~S B\n" n-read)))
-            (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
-            (loop (+ n-have n-read) object-id msg-size opcode control)))
-        (lambda (key . args) (sferr "receiver error\n"))))
+      (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
+             (n-read (vector-ref res 0))
+             (control (or control (vector-ref res 1)))
+             (flags (vector-ref res 2)))
+        (when io-debug (if (positive? n-read) (sferr "recv ~S B\n" n-read)))
+        (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
+        (loop (+ n-have n-read) object-id msg-size opcode control)))
      ((not object-id)
       (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
              (word1 (bytevector-u32-native-ref ev-iobuf 4))
@@ -625,6 +640,10 @@ exec $GDB_PFX guile $0
          (cro (cairo_create srf))
          (extents (make-cairo_text_extents_t))
          (text "Hello, world!"))
+    (cairo_move_to cro 20.0 20.0)
+    (cairo_line_to cro 120.0 120.0)
+    (cairo_stroke cro)
+    #|
     (cairo_select_font_face cro "Sans"
                             'CAIRO_FONT_SLANT_NORMAL
                             'CAIRO_FONT_WEIGHT_NORMAL)
@@ -632,7 +651,11 @@ exec $GDB_PFX guile $0
     (cairo_text_extents cro text (pointer-to extents))
     (cairo_move_to cro 50.0 50.0)
     (cairo_show_text cro text)
+    |#
 
+    (sferr "attach\n") (fsleep 0.1)
+    (wl_surface:attach my-surf-id my-buf-id 0 0)
+    (sferr "commit\n") (fsleep 0.1)
     (wl_surface:commit my-surf-id)
     ))
   
@@ -645,9 +668,12 @@ exec $GDB_PFX guile $0
 
   (set! my-surf-id (let* ((id (alloc-id)))
                      (wl_compositor:create_surface comp-id id)
-                     (set-object! id 'wl_surface)
+                     (fsleep 0.1)
+                     (set-object! id 'wl_surface realize)
                      id))
-
+  ;;(sync-and-wait)
+  (fsleep 0.1)
+  ;;(sync-and-wait)
   (wl_surface:attach my-surf-id my-buf-id 0 0)
 
   (set! my-xsrf-id (let ((id (alloc-id)))
@@ -658,9 +684,14 @@ exec $GDB_PFX guile $0
   
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
+                     ;;(xdg_toplevel:set_title 
                      (set-object! id 'xdg_toplevel)
                      id))
-
+  #|
+  (sync-and-wait)
+  (wl_surface:commit my-surf-id)
+  |#
+  
   (if #f #f))
 
 (appl-main)
