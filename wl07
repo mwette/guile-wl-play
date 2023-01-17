@@ -1,6 +1,6 @@
 #!/bin/bash
-#|
 # -*- scheme -*-
+#|
 # wl07 - wayland client in fibers
 # telnet localhost 37146
 
@@ -266,7 +266,7 @@ exec $GDB_PFX guile $0
 (define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
-  (sferr "buffer:release done\n"))
+  (sferr "buffer:release NEEDS WORK\n"))
 
 ;; --- wl_data_offer
 
@@ -375,9 +375,11 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_surface ack_configure serial)
             
 (define (handle-xdg_surface:configure obj-id serial)
+  (sferr "configure ...\n")
   (xdg_surface:ack_configure obj-id serial)
-  (sferr "todo: fixup xdg_surface:configure\n")
-  #t)
+  (let ((obj (vector-ref object-value-vec obj-id)))
+    (if (procedure? obj) (obj obj-id)))
+  )
 
 ;; --- xdg_toplevel
 
@@ -615,6 +617,25 @@ exec $GDB_PFX guile $0
     (set-object! id 'wl_buffer)
     id))
 
+(define (realize obj-id)
+  (let* ((buffer my-buf-bv)
+         (width 500) (height 300) (stride (* width 4))
+         (srf (cairo_image_surface_create_for_data
+               buffer 'CAIRO_FORMAT_ARGB32 width height stride))
+         (cro (cairo_create srf))
+         (extents (make-cairo_text_extents_t))
+         (text "Hello, world!"))
+    (cairo_select_font_face cro "Sans"
+                            'CAIRO_FONT_SLANT_NORMAL
+                            'CAIRO_FONT_WEIGHT_NORMAL)
+    (cairo_set_font_size cro 32.0)
+    (cairo_text_extents cro text (pointer-to extents))
+    (cairo_move_to cro 50.0 50.0)
+    (cairo_show_text cro text)
+
+    (wl_surface:commit my-surf-id)
+    ))
+  
 (define (tryit)
 
   (let* ((pool-id (let ((id (create-buffer-pool))) (sync-and-wait) id))
@@ -622,42 +643,23 @@ exec $GDB_PFX guile $0
     (set! my-pool-id pool-id)
     (set! my-buf-id buf-id))
 
-  (let* ((id (alloc-id)))
-    (wl_compositor:create_surface comp-id id)
-    (set! my-surf-id id))
+  (set! my-surf-id (let* ((id (alloc-id)))
+                     (wl_compositor:create_surface comp-id id)
+                     (set-object! id 'wl_surface)
+                     id))
 
-  (let* ((width 500) (height 300) (stride (* width 4))
-         (srf (cairo_image_surface_create_for_data
-               my-buf-bv 'CAIRO_FORMAT_ARGB32 width height stride))
-         (cro (cairo_create srf))
-         (extents (make-cairo_text_extents_t))
-         (text "Hello, world!")
-         )
-    (cairo_select_font_face cro "Sans"
-                            'CAIRO_FONT_SLANT_NORMAL
-                            'CAIRO_FONT_WEIGHT_NORMAL)
-    (cairo_set_font_size cro 32.0)
-    (cairo_text_extents cro text (pointer-to extents))
-    (cairo_move_to cro 20.0 20.0)
-    (cairo_show_text cro text))
-
-  (let* ()
-    (wl_surface:attach my-surf-id my-buf-id 0 0)
-    (wl_surface:damage my-surf-id 0 0 9999 9999)
-    (wl_surface:commit my-surf-id)
-    #t)
+  (wl_surface:attach my-surf-id my-buf-id 0 0)
 
   (set! my-xsrf-id (let ((id (alloc-id)))
-                     (sferr "id=~S\n" id)
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
+                     (set-object! id 'xdg_surface realize)
                      id))
-  #|
-  (sync-and-wait)
+  (fsleep 0.1)
+  
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
+                     (set-object! id 'xdg_toplevel)
                      id))
-  (sync-and-wait)
-  |#
 
   (if #f #f))
 
