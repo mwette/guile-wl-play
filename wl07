@@ -2,7 +2,11 @@
 # -*- scheme -*-
 #|
 # wl07 - wayland client in fibers
-# telnet localhost 37146
+# usage:
+#   $ ./wl07 &
+#   $ telnet localhost 37146
+#   scheme@(guile-user)> (tryit)
+#   scheme@(guile-user)> (done)
 
 LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
@@ -387,7 +391,6 @@ exec $GDB_PFX guile $0
             
 (define (handle-xdg_surface:configure obj-id serial)
   (sferr "configure ...\n")
-  (fsleep 0.5)
   (xdg_surface:ack_configure obj-id serial)
   (let ((obj (vector-ref object-value-vec obj-id)))
     (when (procedure? obj)
@@ -600,6 +603,7 @@ exec $GDB_PFX guile $0
 (define my-surf-id #f)
 (define my-buf-id #f)
 (define my-buf-bv #f)
+(define my-buf-fd #f)
 (define my-xsrf-id #f)
 (define my-topl-id #f)
 
@@ -611,6 +615,39 @@ exec $GDB_PFX guile $0
   (size shm-pool-size)
   (bv shm-pool-bv))
 
+;; ===
+
+;; return (fd . bv)
+(define* (create-file-buffer #:optional (size #x1000000))
+  (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
+         (fd (port->fdes port))
+         (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
+    (set! my-buf-bv bv)
+    (cons fd bv)))
+
+(define* (draw-buffer)
+  (let* ((buffer my-buf-bv)
+         (width 500) (height 300) (stride (* width 4))
+         (srf (cairo_image_surface_create_for_data
+               buffer 'CAIRO_FORMAT_ARGB32 width height stride))
+         (cro (cairo_create srf))
+         ;;(extents (make-cairo_text_extents_t))
+         ;;(text "Hello, world!")
+         )
+    (cairo_move_to cro 20.0 20.0)
+    (cairo_line_to cro 120.0 120.0)
+    (cairo_stroke cro)
+    #|
+    (cairo_select_font_face cro "Sans"
+                            'CAIRO_FONT_SLANT_NORMAL
+                            'CAIRO_FONT_WEIGHT_NORMAL)
+    (cairo_set_font_size cro 32.0)
+    (cairo_text_extents cro text (pointer-to extents))
+    (cairo_move_to cro 50.0 50.0)
+    (cairo_show_text cro text)
+    |#
+    ))
+
 (define* (create-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))
@@ -619,10 +656,10 @@ exec $GDB_PFX guile $0
          (shm-pool (and bv (make-shm-pool port fd size bv))))
     (sferr "create_pool size ~S => ~S\n" size pool-id)
     (vector-set! object-value-vec pool-id shm-pool)
-    (set-object! pool-id 'wl_shm_pool shm-pool)
     (wl_shm:create_pool shm-id pool-id fd size)
     (set! my-buf-bv bv)
-    pool-id))
+    (set! my-buf-fd fd)
+    shm-pool))
 
 (define (create-buffer pool-id offset width height)
   ;; use stride 4*width, format ARGB8888=0
@@ -631,6 +668,69 @@ exec $GDB_PFX guile $0
     (wl_shm_pool:create_buffer pool-id id offset width height (* width 4) 0)
     (set-object! id 'wl_buffer)
     id))
+
+(define (stage-0)
+  (create-file-buffer)
+  (if #f #f))
+  
+;; => wl_compositor:create_surface
+;; => xdg_wm_base:get_xdg_surface
+;; => xdg_surface:get_toplevel
+;; => wl_surface:commit
+(define (stage-1)
+  (set! my-surf-id (let* ((id (alloc-id)))
+                     (wl_compositor:create_surface comp-id id)
+                     (set-object! id 'wl_surface stage-2)
+                     id))
+  (fsleep 0.1)
+  (set! my-xsrf-id (let ((id (alloc-id)))
+                     (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
+                     (set-object! id 'xdg_surface stage-2)
+                     id))
+  (set! my-topl-id (let ((id (alloc-id)))
+                     (xdg_surface:get_toplevel my-xsrf-id id)
+                     ;;(xdg_toplevel:set_title 
+                     (set-object! id 'xdg_toplevel)
+                     id))
+  (wl_surface:commit my-surf-id)
+  (if #f #f))
+
+
+;; <= xdg_surface:configure
+;; => xdg_surface:ack_configure
+
+;; => wl_shm:create_pool
+;; => wl_shm_pool:create_buffer
+;; => wl_shm_pool:destroy
+;; => wl_surface:attach
+;; => wl_surface:commit
+
+(define (stage-2)
+  (let ((id (alloc-id)))
+    (wl_shm:create_pool shm-id id my-buf-fd #x1000000)
+    (set-object! id 'wl_shm_pool)
+    (set! my-pool-id id)
+    id)
+  (fsleep 0.1)
+  (let* ((id (alloc-id))
+         (offset 0) (width 500) (height 300) (stride (* width 4)) (format 0))
+    (wl_shm_pool:create_buffer my-pool-id id offset width height stride format)
+    (set! my-buf-id id)
+    (set-object! id 'wl_buffer))
+  (fsleep 0.1)
+  (wl_shm_pool:destroy my-pool-id)
+  (fsleep 0.1)
+  (draw-buffer)
+  (fsleep 0.1)
+  (wl_surface:attach my-surf-id my-buf-id 0 0)
+  (wl_surface:commit my-surf-id)
+  (if #f #f))
+
+;; <= wl_display:delete
+;; <= wl_buffer:release
+;; => wl_buffer:destroy
+  
+;; ===
 
 (define (realize obj-id)
   (let* ((buffer my-buf-bv)
