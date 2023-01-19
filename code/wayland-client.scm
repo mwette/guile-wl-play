@@ -593,7 +593,8 @@
   (lambda (obj-id bv ix serial mime_type)
     (define (encode-body)
       (bytevector-u32-native-set! bv (+ ix 8) serial)
-      (enc-string bv (+ ix 12) mime_type))
+      (let ((ix (enc-string bv (+ ix 12) mime_type)))
+        (values (+ ix 0) #f)))
     (call-with-values
       encode-body
       (lambda (msg-size control)
@@ -660,7 +661,8 @@
 (define-public encode-wl_data_source:offer
   (lambda (obj-id bv ix mime_type)
     (define (encode-body)
-      (enc-string bv (+ ix 8) mime_type))
+      (let ((ix (enc-string bv (+ ix 8) mime_type)))
+        (values (+ ix 0) #f)))
     (call-with-values
       encode-body
       (lambda (msg-size control)
@@ -899,7 +901,8 @@
 (define-public encode-wl_shell_surface:set_title
   (lambda (obj-id bv ix title)
     (define (encode-body)
-      (enc-string bv (+ ix 8) title))
+      (let ((ix (enc-string bv (+ ix 8) title)))
+        (values (+ ix 0) #f)))
     (call-with-values
       encode-body
       (lambda (msg-size control)
@@ -911,7 +914,8 @@
 (define-public encode-wl_shell_surface:set_class
   (lambda (obj-id bv ix class_)
     (define (encode-body)
-      (enc-string bv (+ ix 8) class_))
+      (let ((ix (enc-string bv (+ ix 8) class_)))
+        (values (+ ix 0) #f)))
     (call-with-values
       encode-body
       (lambda (msg-size control)
