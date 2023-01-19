@@ -123,20 +123,14 @@ run program to wlsock
                  fd (+ ix 4) #f #f nl tl))
                ((string)
                 (reverse
-                 (cons
-                  (if (null? nl)
-                      `(enc-string bv (+ ix ,ix) ,name)
-                      `(let ((ix (enc-string bv (+ ix ,ix) ,name)))
-                         ,@(loop '() fd 0 #f #f nl tl)))
-                  rz)))
+                 (cons `(let ((ix (enc-string bv (+ ix ,ix) ,name)))
+                          ,@(loop '() fd 0 #f #f nl tl))
+                       rz)))
                ((array)
                 (reverse
-                 (cons
-                  (if (null? nl)
-                      `(enc-array bv (+ ix ,ix) ,name)
-                      `(let ((ix (enc-array bv (+ ix ,ix) ,name)))
-                         ,@(loop '() fd 0 #f #f nl tl)))
-                  rz)))
+                 (cons `(let ((ix (enc-array bv (+ ix ,ix) ,name)))
+                          ,@(loop '() fd 0 #f #f nl tl))
+                       rz)))
                ((fd)
                 (loop rz `(enc-fd fd) ix #f #f nl tl))
                (else
