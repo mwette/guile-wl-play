@@ -513,23 +513,22 @@ exec $GDB_PFX guile $0
     (cond
      ((positive? n-left)
       (if cm
-          (sferr "sending w/ fd=~A:\n" (dec-fd cm))
-          (sferr "sending:\n"))
+          (sferr "S: sending ~S bytes w/ fd=~A:\n" n-left (dec-fd cm))
+          (sferr "S: sending ~S bytes:\n" n-left))
       (if (<= n-left 32)
-          (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
-          (sferr " ~A ...\n" (fmtbv/x rq-iobuf n-sent 32 4)))
-      (when io-debug (sferr "  sending ~S bytes\n" n-left))
+          (sferr "   ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
+          (sferr "   ~A ...\n" (fmtbv/x rq-iobuf n-sent 32 4)))
       (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
         (when io-debug "  n-sent:~S n-left:~S n:~S\n" n-sent n-left n)
         (loop (+ n-sent n) (- n-left n) #f rqq)))
      ((pair? rqq)
       (call-with-values (car rqq) 
         (lambda (ln cm)
-          (when io-debug (sferr "stage msgsend ln ~S  cm ~S\n" ln cm))
+          (when io-debug (sferr "S: stage msg  ln ~S  cm ~S\n" ln cm))
           (loop 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
-        (when io-debug (sferr "queue to send, ~S queued\n" (1+ (length rqq))))
+        (when io-debug (sferr "S: queue msg  ~S queued\n" (1+ (length rqq))))
         (loop n-sent n-left cm (cons req rqq))))
      (else
       (sferr "sender says wtf\n")))))
@@ -555,7 +554,7 @@ exec $GDB_PFX guile $0
              (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
         (loop n-have object-id msg-size opcode control)))
      (else
-      (when io-debug (sferr "dispatch ~S ~S\n" object-id opcode))
+      (when io-debug (sferr "R: dispatch ~S ~S\n" object-id opcode))
       (dispatch object-id opcode ev-iobuf 8 control)
       (if (> n-have msg-size)
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
@@ -638,6 +637,9 @@ exec $GDB_PFX guile $0
   (size shm-pool-size)
   (bv shm-pool-bv))
 
+(load-extension "xmmap" "scm_init_xmmap")
+(define mmap xmmap)
+
 (define* (create-file-buffer #:optional (size #x1000000))
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))
@@ -686,6 +688,7 @@ exec $GDB_PFX guile $0
   (create-file-buffer)
   (if #f #f))
 
+;; read xdg_surface description in xdg-shell.xml
 (define (stage-1)
   (set! io-debug #t)
   (set! my-surf-id (let* ((id (alloc-id)))
@@ -695,10 +698,12 @@ exec $GDB_PFX guile $0
   (fsleep 0.1)
   (set! my-xsrf-id (let ((id (alloc-id)))
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
+                     (sync-and-wait)
                      (set-object! id 'xdg_surface stage-2)
                      id))
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
+                     (sync-and-wait)
                      (set-object! id 'xdg_toplevel)
                      (xdg_toplevel:set_title id "wl-play")
                      (sync-and-wait)
@@ -706,12 +711,14 @@ exec $GDB_PFX guile $0
   (wl_surface:commit my-surf-id)
   (if #f #f))
 
+;; this gets called in response to :configure event
 (define (stage-2 obj-id)
   (sferr "executing stage-2\n")
   (let ((id (alloc-id)))
     ;; 300 x 500 x 4 = 600000
     ;;(wl_shm:create_pool shm-id id my-buf-fd #x1000000)
     (wl_shm:create_pool shm-id id my-buf-fd 600000)
+    (sync-and-wait)
     (set-object! id 'wl_shm_pool)
     (set! my-pool-id id)
     id)
@@ -721,12 +728,13 @@ exec $GDB_PFX guile $0
          (format 0)                     ; argb8888 = 0, xrgb8888 = 1
          )
     (wl_shm_pool:create_buffer my-pool-id id offset width height stride format)
+    (sync-and-wait)
     (set-object! id 'wl_buffer)
     (set! my-buf-id id)
     id)
-  (sync-and-wait)
   (draw-buffer) (fsleep 0.1)
-  ;;(wl_shm_pool:destroy my-pool-id) (fsleep 0.1)
+  (wl_shm_pool:destroy my-pool-id) (fsleep 0.1)
+  (sync-and-wait)
   (wl_surface:attach my-surf-id my-buf-id 0 0)
   (sync-and-wait)
   (wl_surface:commit my-surf-id)
