@@ -2,7 +2,11 @@
 # -*- scheme -*-
 #|
 # wl07 - wayland client in fibers
-# telnet localhost 37146
+# usage:
+#   $ ./wl07 &
+#   $ telnet localhost 37146
+#   scheme@(guile-user)> (tryit)
+#   scheme@(guile-user)> (done)
 
 LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
@@ -387,7 +391,6 @@ exec $GDB_PFX guile $0
             
 (define (handle-xdg_surface:configure obj-id serial)
   (sferr "configure ...\n")
-  (fsleep 0.5)
   (xdg_surface:ack_configure obj-id serial)
   (let ((obj (vector-ref object-value-vec obj-id)))
     (when (procedure? obj)
@@ -509,21 +512,23 @@ exec $GDB_PFX guile $0
     (fsleep 0.01)
     (cond
      ((positive? n-left)
-      (sferr "send message\n")
-      (sferr " ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
-      (if cm (sferr "  w/ fd ~A in ~S\n" (dec-fd cm) cm))
-      (when io-debug (sferr "sending ~S bytes\n" n-left))
+      (if cm
+          (sferr "S: sending ~S bytes w/ fd=~A:\n" n-left (dec-fd cm))
+          (sferr "S: sending ~S bytes:\n" n-left))
+      (if (<= n-left 32)
+          (sferr "   ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
+          (sferr "   ~A ...\n" (fmtbv/x rq-iobuf n-sent 32 4)))
       (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
         (when io-debug "  n-sent:~S n-left:~S n:~S\n" n-sent n-left n)
         (loop (+ n-sent n) (- n-left n) #f rqq)))
      ((pair? rqq)
       (call-with-values (car rqq) 
         (lambda (ln cm)
-          (when io-debug (sferr "sending msg  ln ~S  cm ~S\n" ln cm))
+          (when io-debug (sferr "S: stage msg  ln ~S  cm ~S\n" ln cm))
           (loop 0 ln cm (cdr rqq)))))
      ((get-message rq-chan) =>
       (lambda (req)
-        (when io-debug (sferr "queue to send after ~S\n" (length rqq)))
+        (when io-debug (sferr "S: queue msg  ~S queued\n" (1+ (length rqq))))
         (loop n-sent n-left cm (cons req rqq))))
      (else
       (sferr "sender says wtf\n")))))
@@ -549,7 +554,7 @@ exec $GDB_PFX guile $0
              (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
         (loop n-have object-id msg-size opcode control)))
      (else
-      (when io-debug (sferr "dispatch ~S ~S\n" object-id opcode))
+      (when io-debug (sferr "R: dispatch ~S ~S\n" object-id opcode))
       (dispatch object-id opcode ev-iobuf 8 control)
       (if (> n-have msg-size)
           (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
@@ -593,6 +598,26 @@ exec $GDB_PFX guile $0
 
 ;; === appl ===========================
 
+;; stage-1:
+;;   => wl_compositor:create_surface
+;;   => xdg_wm_base:get_xdg_surface
+;;   => xdg_surface:get_toplevel
+;;   => wl_surface:commit
+
+;; <= xdg_surface:configure
+;; => xdg_surface:ack_configure
+
+;; realize:
+;;   => wl_shm:create_pool
+;;   => wl_shm_pool:create_buffer
+;;   => wl_shm_pool:destroy
+;;   => wl_surface:attach
+;;   => wl_surface:commit
+
+;; <= wl_display:delete
+;; <= wl_buffer:release
+;; => wl_buffer:destroy
+  
 (use-modules (system ffi-help-rt))
 (use-modules (ffi cairo))
 
@@ -600,6 +625,7 @@ exec $GDB_PFX guile $0
 (define my-surf-id #f)
 (define my-buf-id #f)
 (define my-buf-bv #f)
+(define my-buf-fd #f)
 (define my-xsrf-id #f)
 (define my-topl-id #f)
 
@@ -611,35 +637,26 @@ exec $GDB_PFX guile $0
   (size shm-pool-size)
   (bv shm-pool-bv))
 
-(define* (create-buffer-pool #:optional (size #x1000000)) ;; def 16 MB
+(load-extension "xmmap" "scm_init_xmmap")
+(define mmap xmmap)
+
+(define* (create-file-buffer #:optional (size #x1000000))
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))
-         (pool-id (alloc-id))
-         (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
-         (shm-pool (and bv (make-shm-pool port fd size bv))))
-    (sferr "create_pool size ~S => ~S\n" size pool-id)
-    (vector-set! object-value-vec pool-id shm-pool)
-    (set-object! pool-id 'wl_shm_pool shm-pool)
-    (wl_shm:create_pool shm-id pool-id fd size)
+         (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
     (set! my-buf-bv bv)
-    pool-id))
+    (set! my-buf-fd fd)
+    (if #f #f)))
 
-(define (create-buffer pool-id offset width height)
-  ;; use stride 4*width, format ARGB8888=0
-  (let* ((id (alloc-id)))
-    (sferr "create buffer\n")
-    (wl_shm_pool:create_buffer pool-id id offset width height (* width 4) 0)
-    (set-object! id 'wl_buffer)
-    id))
-
-(define (realize obj-id)
+(define* (draw-buffer-1)
   (let* ((buffer my-buf-bv)
          (width 500) (height 300) (stride (* width 4))
          (srf (cairo_image_surface_create_for_data
                buffer 'CAIRO_FORMAT_ARGB32 width height stride))
          (cro (cairo_create srf))
-         (extents (make-cairo_text_extents_t))
-         (text "Hello, world!"))
+         ;;(extents (make-cairo_text_extents_t))
+         ;;(text "Hello, world!")
+         )
     (cairo_move_to cro 20.0 20.0)
     (cairo_line_to cro 120.0 120.0)
     (cairo_stroke cro)
@@ -652,46 +669,75 @@ exec $GDB_PFX guile $0
     (cairo_move_to cro 50.0 50.0)
     (cairo_show_text cro text)
     |#
+    (if #f #f)))
 
-    (sferr "attach\n") (fsleep 0.1)
-    (wl_surface:attach my-surf-id my-buf-id 0 0)
-    (sferr "commit\n") (fsleep 0.1)
-    (wl_surface:commit my-surf-id)
-    ))
-  
-(define (tryit)
+(define* (draw-buffer-2)
+  (let loop ((ix 0) (iy 0))
+    (cond
+     ((ix < 500)  ;; #xff666666 #xffeeeeee
+      (if (< (remainder ix 16) 8)
+          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) ix) #xff666666)
+          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) ix) #xffeeeeee))
+      (loop (1+ ix) iy))
+     ((iy < 300) (loop 0 (1+ iy)))))
+  (if #f #f))
 
-  (let* ((pool-id (let ((id (create-buffer-pool))) (sync-and-wait) id))
-         (buf-id (create-buffer pool-id 0 500 300)))
-    (set! my-pool-id pool-id)
-    (set! my-buf-id buf-id))
+(define draw-buffer draw-buffer-2)
 
+(define (stage-0)
+  (create-file-buffer)
+  (if #f #f))
+
+;; read xdg_surface description in xdg-shell.xml
+(define (stage-1)
+  (set! io-debug #t)
   (set! my-surf-id (let* ((id (alloc-id)))
                      (wl_compositor:create_surface comp-id id)
-                     (fsleep 0.1)
-                     (set-object! id 'wl_surface realize)
+                     (set-object! id 'wl_surface stage-2)
                      id))
-  ;;(sync-and-wait)
   (fsleep 0.1)
-  ;;(sync-and-wait)
-  (wl_surface:attach my-surf-id my-buf-id 0 0)
-
   (set! my-xsrf-id (let ((id (alloc-id)))
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
-                     (set-object! id 'xdg_surface realize)
+                     (sync-and-wait)
+                     (set-object! id 'xdg_surface stage-2)
                      id))
-  (fsleep 0.1)
-  
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
-                     ;;(xdg_toplevel:set_title 
+                     (sync-and-wait)
                      (set-object! id 'xdg_toplevel)
+                     (xdg_toplevel:set_title id "wl-play")
+                     (sync-and-wait)
                      id))
-  #|
+  (wl_surface:commit my-surf-id)
+  (if #f #f))
+
+;; this gets called in response to :configure event
+(define (stage-2 obj-id)
+  (sferr "executing stage-2\n")
+  (let ((id (alloc-id)))
+    ;; 300 x 500 x 4 = 600000
+    ;;(wl_shm:create_pool shm-id id my-buf-fd #x1000000)
+    (wl_shm:create_pool shm-id id my-buf-fd 600000)
+    (sync-and-wait)
+    (set-object! id 'wl_shm_pool)
+    (set! my-pool-id id)
+    id)
+  (fsleep 0.1)
+  (let* ((id (alloc-id))
+         (offset 0) (width 500) (height 300) (stride (* width 4))
+         (format 0)                     ; argb8888 = 0, xrgb8888 = 1
+         )
+    (wl_shm_pool:create_buffer my-pool-id id offset width height stride format)
+    (sync-and-wait)
+    (set-object! id 'wl_buffer)
+    (set! my-buf-id id)
+    id)
+  (draw-buffer) (fsleep 0.1)
+  (wl_shm_pool:destroy my-pool-id) (fsleep 0.1)
+  (sync-and-wait)
+  (wl_surface:attach my-surf-id my-buf-id 0 0)
   (sync-and-wait)
   (wl_surface:commit my-surf-id)
-  |#
-  
   (if #f #f))
 
 (appl-main)

@@ -1,0 +1,68 @@
+#!/bin/bash
+# -*- scheme -*-
+# $ ./testmsgC
+#|
+LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH
+
+NYACC_DIR=$HOME/repo/sv/nyacc/nyacc-rel/nyacc-1.08
+GUILE_LOAD_PATH=$NYACC_DIR/examples:$NYACC_DIR/module
+GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
+export GUILE_LOAD_PATH
+
+GDB_PFX=""
+if [ $# -gt 0 ]; then
+    case "$1" in
+    --debug) GDB_PFX="gdb --args"; shift ;;
+    esac
+fi
+
+exec $GDB_PFX guile $0
+|#
+!#
+
+(use-modules (rnrs bytevectors))
+(use-modules (sockmsg))
+(use-modules (wl-client))
+
+(define (sferr fmt . args) (apply simple-format #t fmt args))
+
+#|
+(define-public encode-wl_shm:create_pool
+  (lambda (obj-id bv ix id fd size)
+    (define (encode-body)
+      (bytevector-u32-native-set! bv (+ ix 8) id)
+      (bytevector-s32-native-set! bv (+ ix 12) size)
+      (values (+ ix 16) (enc-fd fd)))
+    (call-with-values
+      encode-body
+      (lambda (msg-size control)
+        (bytevector-u32-native-set! bv ix obj-id)
+        (bytevector-u16-native-set! bv (+ ix 6) msg-size)
+        (bytevector-u16-native-set! bv (+ ix 4) 0)
+        (values msg-size control)))))
+|#
+
+(define socket-path "/var/tmp/abc")
+
+(let* ((path socket-path)
+       (style (logior SOCK_STREAM SOCK_CLOEXEC))
+       (sock (socket PF_UNIX style 0))
+       (conn (connect sock AF_UNIX path))
+       (size 1024)
+       (port (let ((port (tmpfile))) (truncate-file port size) port))
+       (fd (port->fdes port))
+       (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+       (io-buf (make-bytevector 120 #xff)))
+  (sferr "fd = ~S\n" fd)
+  (bytevector-copy! (string->utf8 "Hello, world!\n") 0 bv 0 14)
+  (bytevector-u8-set! bv 14 0)
+  (call-with-values
+      (lambda () (encode-wl_shm:create_pool 3 io-buf 0 10 fd size))
+    (lambda (size cm)
+      (sendmsg sock io-buf 0 size cm)))
+  (sleep 100)
+  #f)
+
+
+;; --- last line ---
