@@ -417,13 +417,20 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_toplevel set_minimized)
 
 (define (handle-xdg_toplevel:configure obj-id width height states)
-  (sferr "toplevel:configure \n"))
+  ;; states in an array:
+  (sferr "FIXME! toplevel:configure wid=~S hei=~S\n" width height)
+  (sferr "  states=~S\n" states)
+  (if #f #f))
  
 (define (handle-xdg_toplevel:close obj-id width height states)
-  (sferr "toplevel:close\n"))
+  (sferr "FIXME! toplevel:close ~S ~S\n" width height)
+  (sferr "  states=~S\n" states)
+  (if #f #f))
 
 (define (handle-xdg_toplevel:configure_bounds obj-id width height)
-  (sferr "toplevel:config_bounds\n"))
+  ;; hint for largest area : sent before configure event
+  (sferr "toplevel:configure_bounds wid=~S hei=~S\n" width height)
+  (if #f #f))
 
 ;; --- xdg_popup
 
@@ -637,8 +644,8 @@ exec $GDB_PFX guile $0
   (size shm-pool-size)
   (bv shm-pool-bv))
 
-(load-extension "xmmap" "scm_init_xmmap")
-(define mmap xmmap)
+;;(load-extension "xmmap" "scm_init_xmmap")
+;;(define mmap xmmap)
 
 (define* (create-file-buffer #:optional (size #x1000000))
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
@@ -695,19 +702,22 @@ exec $GDB_PFX guile $0
                      (wl_compositor:create_surface comp-id id)
                      (set-object! id 'wl_surface stage-2)
                      id))
-  (fsleep 0.1)
+  (sync-and-wait)
   (set! my-xsrf-id (let ((id (alloc-id)))
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
-                     (sync-and-wait)
                      (set-object! id 'xdg_surface stage-2)
                      id))
+  (sync-and-wait)
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
-                     (sync-and-wait)
                      (set-object! id 'xdg_toplevel)
-                     (xdg_toplevel:set_title id "wl-play")
-                     (sync-and-wait)
                      id))
+  (sync-and-wait)
+  (xdg_toplevel:set_title my-topl-id "wl-play")
+  (xdg_toplevel:set_max_size my-topl-id 500 300)
+  (xdg_toplevel:set_min_size my-topl-id 500 300)
+  ;;(xdg_toplevel:set_maximized my-topl-id)
+  (sync-and-wait)
   (wl_surface:commit my-surf-id)
   (if #f #f))
 
