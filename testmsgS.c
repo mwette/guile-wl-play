@@ -24,7 +24,6 @@ int main() {
 
   unlink(path);
 
-  //sock = socket(PF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   sock = socket(PF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock == -1) abort();
 
@@ -54,7 +53,7 @@ int main() {
       msg.msg_controllen = sizeof(cmbuf);
       msg.msg_flags = 0;
       
-      printf("waiting for mesg\n");
+      //printf("waiting for mesg\n");
       n = recvmsg(clnt, &msg, sizeof(buf));
       if (n == -1) abort();
 
