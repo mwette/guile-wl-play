@@ -1,6 +1,10 @@
-/* coming patch for mmap.c */
+/* xmmap.c - cobbled loadable until added to guile binary
+ *
+ */
 #include <sys/mman.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <gc/gc.h>
 #include <libguile.h>
 
 #define SIZEOF_OFF_T 8
@@ -11,7 +15,6 @@
 #endif
 
 #ifndef SCM_SYSCALL
-/* from syscalls.h */
 #define SCM_SYSCALL(line)                       \
   do                                            \
     {                                           \
@@ -26,6 +29,7 @@
   while (errno == EINTR)
 #endif
 
+/* coming patch for mmap.c: */
 
 static void
 xmmap_finalizer (void *ptr, void *data)
@@ -110,7 +114,6 @@ SCM_DEFINE (scm_xmmap_search, "xmmap/search", 2, 4, 0,
   pointer = scm_cell (scm_tc7_pointer, (scm_t_bits) c_mem);
   bvec = scm_c_take_typed_bytevector((signed char *) c_mem + c_offset, c_len,
 				     SCM_ARRAY_ELEMENT_TYPE_VU8, pointer);
-  assert(sizeof(void*) <= sizeof(size_t));
   scm_i_set_finalizer (SCM2PTR (bvec), xmmap_finalizer, (void*) c_len);
   return bvec;
 }

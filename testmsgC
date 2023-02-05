@@ -23,25 +23,12 @@ exec $GDB_PFX guile $0
 
 (use-modules (rnrs bytevectors))
 (use-modules (sockmsg))
-(use-modules (wl-client))
+(use-modules (system foreign))
 
 (define (sferr fmt . args) (apply simple-format #t fmt args))
 
-#|
-(define-public encode-wl_shm:create_pool
-  (lambda (obj-id bv ix id fd size)
-    (define (encode-body)
-      (bytevector-u32-native-set! bv (+ ix 8) id)
-      (bytevector-s32-native-set! bv (+ ix 12) size)
-      (values (+ ix 16) (enc-fd fd)))
-    (call-with-values
-      encode-body
-      (lambda (msg-size control)
-        (bytevector-u32-native-set! bv ix obj-id)
-        (bytevector-u16-native-set! bv (+ ix 6) msg-size)
-        (bytevector-u16-native-set! bv (+ ix 4) 0)
-        (values msg-size control)))))
-|#
+(use-modules (wl-client))
+
 
 (define socket-path "/var/tmp/abc")
 
