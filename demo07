@@ -160,7 +160,7 @@ exec $GDB_PFX guile $0
 
 ;; ====================================
 
-(define verbose #t)
+(define wl-debug #f)
 
 (eval-when (expand load eval)
   (define (gen-id x . args)
@@ -173,7 +173,7 @@ exec $GDB_PFX guile $0
     (syntax-case x ()
       ((_ iface meth arg ...)
        #`(define (#,(gen-id x #'iface ":" #'meth) obj-id arg ...)
-           (when verbose (sferr "=> ~S:~S ...\n" 'iface 'meth))
+           (when wl-debug (sferr "=> ~S:~S ...\n" 'iface 'meth))
            (put-message rq-chan
              (lambda ()
                (#,(gen-id x "encode-" #'iface ":" #'meth)
@@ -186,7 +186,7 @@ exec $GDB_PFX guile $0
        #`(set-event-handler!
           'iface 'meth
           (lambda args
-            (when verbose (sferr "<= ~S:~S\n" 'iface 'meth))
+            (when wl-debug (sferr "<= ~S:~S\n" 'iface 'meth))
             (apply #,(gen-id x "handle-" #'iface ":" #'meth) args)))))))
 
 ;; ====================================
@@ -406,11 +406,11 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_surface ack_configure serial)
             
 (define (handle-xdg_surface:configure obj-id serial)
-  (sferr "xdg_surface:configure ~S ~S ...\n" obj-id serial)
+  ;;(sferr "xdg_surface:configure ~S ~S ...\n" obj-id serial)
   (xdg_surface:ack_configure obj-id serial)
   (let ((obj (vector-ref object-value-vec obj-id)))
     (when (procedure? obj)
-      (sferr "  ... calling xdg_surface handler\n")
+      ;;(sferr "  ... calling xdg_surface handler\n")
       (obj obj-id))))
 
 ;; --- xdg_toplevel
@@ -432,7 +432,7 @@ exec $GDB_PFX guile $0
 
 (define (handle-xdg_toplevel:configure obj-id width height states)
   ;; states in an array:
-  (sferr "FIXME! toplevel:configure wid=~S hei=~S\n" width height)
+  ;;(sferr "FIXME! toplevel:configure wid=~S hei=~S\n" width height)
   ;;(sferr "  states=~S\n" states)
   (if #f #f))
  
@@ -443,7 +443,7 @@ exec $GDB_PFX guile $0
 
 (define (handle-xdg_toplevel:configure_bounds obj-id width height)
   ;; hint for largest area : sent before configure event
-  (sferr "toplevel:configure_bounds wid=~S hei=~S\n" width height)
+  ;;(sferr "toplevel:configure_bounds wid=~S hei=~S\n" width height)
   (if #f #f))
 
 ;; --- xdg_popup
@@ -618,7 +618,7 @@ exec $GDB_PFX guile $0
      (stage-1)
      (force-output (current-error-port))
      ;;(wait done-cond)
-     (fsleep 10.0)
+     (fsleep 3.0)
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))
 
@@ -644,7 +644,7 @@ exec $GDB_PFX guile $0
 ;; <= wl_buffer:release
 ;; => wl_buffer:destroy
   
-(use-modules (system ffi-help-rt))
+(use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
 
 (define my-pool-id #f)
@@ -674,39 +674,74 @@ exec $GDB_PFX guile $0
     (set! my-buf-fd fd)
     (if #f #f)))
 
-(define* (draw-buffer-1)
-  (let* ((buffer my-buf-bv)
+(define (draw-buffer-1)
+  (let loop ((ix 0) (iy 0) (lt #xff666666) (rt #xffeeeeee))
+    (cond
+     ((< ix 500)
+      (if (< (remainder ix 16) 8)
+          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) (* ix 4)) lt)
+          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) (* ix 4)) rt))
+      (loop (1+ ix) iy lt rt))
+     ((< iy 300)
+      (if (= (remainder iy 16) 15)
+          (loop 0 (1+ iy) rt lt)
+          (loop 0 (1+ iy) lt rt)))))
+  (if #f #f))
+
+(define (draw-buffer-2)
+  (let* ((format 'CAIRO_FORMAT_ARGB32)
+         (format 'CAIRO_FORMAT_RGB24)
+         (buffer my-buf-bv)
          (width 500) (height 300) (stride (* width 4))
          (srf (cairo_image_surface_create_for_data
-               buffer 'CAIRO_FORMAT_ARGB32 width height stride))
+               buffer format width height stride))
          (cro (cairo_create srf))
-         ;;(extents (make-cairo_text_extents_t))
-         ;;(text "Hello, world!")
-         )
+         (extents (make-cairo_text_extents_t))
+         (text "Hello, world!"))
+    (bytevector-fill! buffer #xee)
+    
+    (cairo_move_to cro 0.0 0.0)
     (cairo_move_to cro 20.0 20.0)
     (cairo_line_to cro 120.0 120.0)
     (cairo_stroke cro)
-    #|
-    (cairo_select_font_face cro "Sans"
-                            'CAIRO_FONT_SLANT_NORMAL
-                            'CAIRO_FONT_WEIGHT_NORMAL)
+
+    (cairo_select_font_face
+     cro "Sans" 'CAIRO_FONT_SLANT_NORMAL 'CAIRO_FONT_WEIGHT_NORMAL)
     (cairo_set_font_size cro 32.0)
     (cairo_text_extents cro text (pointer-to extents))
     (cairo_move_to cro 50.0 50.0)
     (cairo_show_text cro text)
-    |#
+
     (if #f #f)))
 
-(define* (draw-buffer-2)
-  (let loop ((ix 0) (iy 0) (evn #xff666666) (odd #xffeeeeee))
-    (cond
-     ((< ix 500)  ;; #xff666666 #xffeeeeee
-      (if (< (remainder ix 16) 8)
-          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) ix) evn)
-          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) ix) odd))
-      (loop (1+ ix) iy evn odd))
-     ((< iy 300) (loop 0 (1+ iy) odd evn))))
-  (if #f #f))
+(define (draw-buffer-3)
+  (let* ((format 'CAIRO_FORMAT_RGB24)
+         (buffer my-buf-bv)
+         (width 500) (height 300) (stride (* width 4))
+         (srf (cairo_image_surface_create_for_data
+               buffer format width height stride))
+         (cr (cairo_create srf))
+         (xc 128.0) (yc 128.0) (radius 100.0)
+         (angle1 (* 45.0 (/ M_PI 180.0)))
+         (angle2 (* 180.0 (/ M_PI 180.0))))
+    (bytevector-fill! buffer #xee)
+    
+    (cairo_set_line_width cr 10.0)
+    (cairo_arc cr xc yc radius angle1 angle2)
+    (cairo_stroke cr)
+
+    (cairo_set_source_rgba cr 1 0.2 0.2 0.6)
+    (cairo_set_line_width cr 6.0)
+
+    (cairo_arc cr xc yc 10.0 0.0 (* 2.0 M_PI))
+    (cairo_fill cr)
+
+    (cairo_arc cr xc yc radius angle1 angle1)
+    (cairo_line_to cr xc yc)
+    (cairo_arc cr xc yc radius angle2 angle2)
+    (cairo_line_to cr xc yc)
+    (cairo_stroke cr)))
+
 
 (define draw-buffer draw-buffer-2)
 
@@ -721,32 +756,26 @@ exec $GDB_PFX guile $0
                      (wl_compositor:create_surface comp-id id)
                      (set-object! id 'wl_surface stage-2)
                      id))
-  ;;(sync-and-wait)
   (set! my-xsrf-id (let ((id (alloc-id)))
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
                      (set-object! id 'xdg_surface stage-2)
                      id))
-  ;;(sync-and-wait)
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
                      (set-object! id 'xdg_toplevel)
                      id))
-  ;;(sync-and-wait)
   (xdg_toplevel:set_title my-topl-id "wl-play")
   (xdg_toplevel:set_max_size my-topl-id 500 300)
   (xdg_toplevel:set_min_size my-topl-id 500 300)
-  ;;(xdg_toplevel:set_maximized my-topl-id)
-  ;;(sync-and-wait)
   (wl_surface:commit my-surf-id)
   (if #f #f))
 
 ;; this gets called in response to :configure event
 (define (stage-2 obj-id)
-  (sferr "executing stage-2\n")
+  ;;(sferr "executing stage-2\n")
   (let ((id (alloc-id)))
     ;; 300 x 500 x 4 = 600000
-    ;;(wl_shm:create_pool shm-id id my-buf-fd #x1000000)
-    (wl_shm:create_pool shm-id id my-buf-fd 600000)
+    (wl_shm:create_pool shm-id id my-buf-fd #x1000000)
     ;;(sync-and-wait)
     (set-object! id 'wl_shm_pool)
     (set! my-pool-id id)
