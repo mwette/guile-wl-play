@@ -1,6 +1,7 @@
 /* xmmap.c - cobbled loadable until added to guile binary
  *
  */
+#include <stdio.h>
 #include <sys/mman.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -29,8 +30,17 @@
   while (errno == EINTR)
 #endif
 
-/* coming patch for mmap.c: */
+#define SCM_BYTEVECTOR_SET_FLAG(bv, flag) \
+  SCM_SET_BYTEVECTOR_FLAGS ((bv), SCM_BYTEVECTOR_FLAGS (bv) | flag)
+#define SCM_BYTEVECTOR_SET_LENGTH(_bv, _len)            \
+  SCM_SET_CELL_WORD_1 ((_bv), (scm_t_bits) (_len))
+#define SCM_BYTEVECTOR_SET_CONTENTS(_bv, _contents)     \
+  SCM_SET_CELL_WORD_2 ((_bv), (scm_t_bits) (_contents))
+#define SCM_BYTEVECTOR_SET_PARENT(_bv, _parent) \
+  SCM_SET_CELL_OBJECT_3 ((_bv), (_parent))
 
+/* coming patch for mmap.c: */
+#if 0
 static void
 xmmap_finalizer (void *ptr, void *data)
 {
@@ -49,6 +59,7 @@ xmmap_finalizer (void *ptr, void *data)
   if (rv != 0)
     scm_misc_error ("mmap", "failed to munmap memory", SCM_EOL);
 }
+#endif
 
 SCM_DEFINE (scm_xmmap_search, "xmmap/search", 2, 4, 0,
             (SCM addr, SCM len, SCM prot, SCM flags, SCM fd, SCM offset),
@@ -112,9 +123,18 @@ SCM_DEFINE (scm_xmmap_search, "xmmap/search", 2, 4, 0,
     scm_syserror ("mmap");              /* errno set */
 
   pointer = scm_cell (scm_tc7_pointer, (scm_t_bits) c_mem);
+#if 0
   bvec = scm_c_take_typed_bytevector((signed char *) c_mem + c_offset, c_len,
 				     SCM_ARRAY_ELEMENT_TYPE_VU8, pointer);
   scm_i_set_finalizer (SCM2PTR (bvec), xmmap_finalizer, (void*) c_len);
+#else /* ??? */
+  bvec = scm_c_make_bytevector(0);
+  SCM_SET_BYTEVECTOR_FLAGS (bvec, SCM_ARRAY_ELEMENT_TYPE_VU8);
+  SCM_BYTEVECTOR_SET_LENGTH (bvec, c_len);
+  SCM_BYTEVECTOR_SET_CONTENTS (bvec, (signed char *) c_mem + c_offset);
+  SCM_BYTEVECTOR_SET_PARENT (bvec, SCM_BOOL_F);
+  (void) pointer;
+#endif
   return bvec;
 }
 #undef FUNC_NAME
@@ -191,6 +211,7 @@ SCM_DEFINE (scm_xmunmap, "xmunmap", 1, 0, 0,
 
 void
 scm_init_xmmap(void) {
+  fprintf(stderr, "warning: The xmmap loadable is an untrustworthy hack.\n");
 #ifdef PROT_READ
   scm_c_define ("PROT_READ", scm_from_int (PROT_READ));
 #endif

@@ -1,4 +1,4 @@
-;;; system/ffi-help-rt.scm - NYACC's FFI help runtime
+;;; ffi/ffi-help-rt.scm - NYACC's FFI help runtime
 
 ;; Copyright (C) 2016-2019,2022 Matthew R. Wette
 ;;
@@ -17,7 +17,7 @@
 
 ;;; Code:
 
-(define-module (system ffi-help-rt)
+(define-module (ffi ffi-help-rt)
   #:export (*ffi-help-version*
 
             ;; user level routines
