@@ -501,10 +501,7 @@ exec $GDB_PFX guile $0
 (define base-id #f)
 
 (define (get-registry)
-  (wl_display:get_registry display-id registry-id)
-  ;;(sync-and-wait)
-  (fsleep 1.0)
-  )
+  (wl_display:get_registry display-id registry-id))
 
 (define (init-globals)
   (unless comp-id (set! comp-id (bind-global "wl_compositor")))
@@ -514,9 +511,8 @@ exec $GDB_PFX guile $0
 
 ;; === agents ========================
 
-(define io-debug #f)
-
 (define wl-sock #f)
+(define io-debug #f)
 
 (define socket-path
   (let ((dir (getenv "XDG_RUNTIME_DIR"))
@@ -565,8 +561,6 @@ exec $GDB_PFX guile $0
 (define (receiver)
   (sferr "receiver starting ...\n")
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
-    (fsleep 0.01) ;; SLEEP HERE
-    ;;(sferr "n-have=~S  msg-size=~S\n" n-have msg-size)
     (cond
      ((< n-have msg-size)
       (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
@@ -615,43 +609,22 @@ exec $GDB_PFX guile $0
      (spawn-fiber receiver)
      (spawn-fiber sender)
      (get-registry)
+     (sync-and-wait)
      (init-globals)
-     (fsleep 1.0)
-     ;;(sync-and-wait)
-     ;;
+     (sync-and-wait)
+     (create-file-buffer)
      (spawn-fiber monitor)
-     (fsleep 1.0)
-     (stage-0)
-     (fsleep 1.0)
-     (stage-1)
-     (force-output (current-error-port))
+     ;;
+     (create-it)
      ;;(wait done-cond)
      (fsleep 3.0)
+     (force-output (current-error-port))
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))
 
+
 ;; === appl ===========================
 
-;; stage-1:
-;;   => wl_compositor:create_surface
-;;   => xdg_wm_base:get_xdg_surface
-;;   => xdg_surface:get_toplevel
-;;   => wl_surface:commit
-
-;; <= xdg_surface:configure
-;; => xdg_surface:ack_configure
-
-;; realize:
-;;   => wl_shm:create_pool
-;;   => wl_shm_pool:create_buffer
-;;   => wl_shm_pool:destroy
-;;   => wl_surface:attach
-;;   => wl_surface:commit
-
-;; <= wl_display:delete
-;; <= wl_buffer:release
-;; => wl_buffer:destroy
-  
 (use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
 
@@ -663,6 +636,7 @@ exec $GDB_PFX guile $0
 (define my-xsrf-id #f)
 (define my-topl-id #f)
 
+#|
 (define-record-type <shm-pool>
   (make-shm-pool port fd size bv)
   shm-pool?
@@ -670,6 +644,7 @@ exec $GDB_PFX guile $0
   (fd shm-pool-fd)
   (size shm-pool-size)
   (bv shm-pool-bv))
+|#
 
 (define* (create-file-buffer #:optional (size #x1000000))
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
@@ -750,20 +725,17 @@ exec $GDB_PFX guile $0
 
 (define draw-buffer draw-buffer-2)
 
-(define (stage-0)
-  (create-file-buffer)
-  (if #f #f))
 
 ;; read xdg_surface description in xdg-shell.xml
-(define (stage-1)
+(define (create-it)
   (set! io-debug #f)
   (set! my-surf-id (let* ((id (alloc-id)))
                      (wl_compositor:create_surface comp-id id)
-                     (set-object! id 'wl_surface stage-2)
+                     (set-object! id 'wl_surface show-it)
                      id))
   (set! my-xsrf-id (let ((id (alloc-id)))
                      (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
-                     (set-object! id 'xdg_surface stage-2)
+                     (set-object! id 'xdg_surface show-it)
                      id))
   (set! my-topl-id (let ((id (alloc-id)))
                      (xdg_surface:get_toplevel my-xsrf-id id)
@@ -775,27 +747,22 @@ exec $GDB_PFX guile $0
   (wl_surface:commit my-surf-id)
   (if #f #f))
 
-;; this gets called in response to :configure event
-(define (stage-2 obj-id)
-  ;;(sferr "executing stage-2\n")
+;; This gets called in response to xdg_surface:configure event.
+(define (show-it obj-id)
   (let ((id (alloc-id)))
     ;; 300 x 500 x 4 = 600000
     (wl_shm:create_pool shm-id id my-buf-fd #x1000000)
-    ;;(sync-and-wait)
     (set-object! id 'wl_shm_pool)
     (set! my-pool-id id)
     id)
   (let* ((id (alloc-id))
          (offset 0) (width 500) (height 300) (stride (* width 4)) (format 1))
     (wl_shm_pool:create_buffer my-pool-id id offset width height stride format)
-    ;;(sync-and-wait)
     (set-object! id 'wl_buffer)
     (set! my-buf-id id)
     id)
-  ;;
   (wl_shm_pool:destroy my-pool-id)
   (set! my-pool-id #f)
-  ;;
   (draw-buffer)
   (wl_surface:attach my-surf-id my-buf-id 0 0)
   (wl_surface:commit my-surf-id)
