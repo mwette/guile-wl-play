@@ -1,7 +1,7 @@
 #!/opt/local/bin/guile -s
 # -*- scheme -*-
 !#
-;; Copyright (C) 2022 Matthew Wette
+;; Copyright (C) 2022-2023 Matthew Wette
 ;;
 ;; This library is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU Lesser General Public
@@ -16,59 +16,55 @@
 ;; You should have received a copy of the GNU Lesser General Public License
 ;; along with this library; if not, see <http://www.gnu.org/licenses/>.
 
-#|
-int, uint: 32-bit signed or unsigned integer.
+;; TODO
+;; 1) deal with fixed type
+;; 2) add enums
 
-fixed: 24.8 bit signed fixed-point numbers.
+;; types
+;; @table @asis
+;; @item int, uint
+;; 32-bit signed or unsigned integer
+;; @item fixed
+;; 24.8 bit signed fixed-point numbers
+;; @item object
+;; 32-bit object ID
+;; @item new_id
+;; 32-bit object ID which allocates that object when received
+;; @item new_id
+;; string, uint, uint for interface, version, and new id, when 
+;; interface is not specified
+;; @item string
+;; string, prefixed with a 32-bit integer specifying its length (in
+;; bytes, including null terminator), followed by the string contents
+;; and a NUL terminator, padded to 32 bits with undefined data. The 
+;; encoding is not specified, but in practice UTF-8 is used. 
+;; @item array
+;; A blob of arbitrary data, prefixed with a 32-bit integer specifying
+;; its length (in bytes), then the verbatim contents of the array,
+;;   padded to 32 bits with undefined data.
+;; @item fd
+;; 0-byte value on the primary transport, but transfers a file 
+;; descriptor to the other end using the ancillary data in the Unix
+;; domain socket message (msg_control).
+;; @item enum
+;; A single value (or bitmap) from an enumeration of known constants,
+;; encoded into a 32-bit integer.
+;; @end table
+;;
+;; Every message starts with header
+;; @itemize
+;; @item object-id : 32 bit
+;; @item msg-size : 16 bit (including header)
+;; @item opcode : 16 bit
+;; @end itemize
 
-object: 32-bit object ID.
+;; object-id 0 is the null object
+;; object-id 1 is reserved as wayland display singleton
+;; client ids are in range: 1-0xFeFFFFFF; server: 0xFF000000-0xFFFFFFFF
 
-new_id: 32-bit object ID which allocates that object when received.
-    OR string, uint, uint (interface, version, new id)
+;; debug w/ socat:
+;; $ socat UNIX-CONNECT:$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY UNIX-LISTEN:wlsock
 
-In addition to these primitives, the following other types are used:
-
-string: A string, prefixed with a 32-bit integer specifying its length
-    (in bytes, including null terminator), followed by the string contents
-    and a NUL terminator, padded to 32 bits with undefined data. The 
-    encoding is not specified, but in practice UTF-8 is used. 
-
-array: A blob of arbitrary data, prefixed with a 32-bit integer specifying
-    its length (in bytes), then the verbatim contents of the array, padded
-    to 32 bits with undefined data.
-
-fd: 0-bit value on the primary transport, but transfers a file descriptor
-     to the other end using the ancillary data in the Unix domain socket
-     message (msg_control).
-
-enum: A single value (or bitmap) from an enumeration of known constants,
-    encoded into a 32-bit integer.
-
-
-=============
-
-every message starts with header
-
-object-id : 32 bit
-msg-size : 16 bit (including header)
-opcode : 16 bit
-
-
-object-id 0 is the null object
-object-id 1 is reserved as wayland display singleton
-
-client ids are in range: 1-0xFeFFFFFF; server: 0xFF000000-0xFFFFFFFF
-
-|#
-
-#|
-debug w/ socat
-  guile xxx (create /tmp/mysocketdn
-$ socat UNIX-CONNECT:$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY UNIX-LISTEN:wlsock
-run program to wlsock
-|#
-
-;;(use-modules (nyacc lang sx-util))
 (use-modules (sxml simple))
 (use-modules (sxml fold))
 (use-modules ((sxml xpath) #:select (sxpath)))
@@ -81,9 +77,6 @@ run program to wlsock
 (define pp pretty-print)
 (define (sf fmt . args) (apply simple-format #t fmt args))
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
-
-;; TODO
-;; 1) deal with fixed type
 
 ;;(define (get-if tree name) ;; name = "wl_display"
 ;;  (protocol . interface (@ name "wl_display"))
@@ -209,16 +202,17 @@ run program to wlsock
                ((arg (@ (name ,name) (type ,type)))
                 (loop (cons name names) (cons type types) (cdr args)))))))
 
-      ((enum . ,ents)
-       (values rx ex seed))
-
-      ((enum (@ (name ,name)) (description . ,_) . ,ents)
-       (sferr "catch 1\n")
-       (values rx ex seed))
-
       ((enum (@ (name ,name)) . ,ents)
-       (sferr "catch 2\n")
-       (values rx ex seed))
+       (let loop ((terms '()) (ents ents))
+         (if (null? ents)
+             (let* ((entry `((name . ,name) (type . enum) (dict . ,terms))))
+               ;;(values rx ex (cons entry seed)))
+               (values rx ex seed))
+             (sxml-match (car ents)
+               ((description . ,_)
+                (loop terms (cdr ents)))
+               ((entry (@ (name ,name) (value ,value)))
+                (loop (acons name value terms) (cdr ents)))))))
 
       (,_ (sf "process-ent MISSED:\n") (pp sx) (quit))))
 
@@ -246,6 +240,39 @@ run program to wlsock
    (lambda (pair) (proc (car pair) (cdr pair)))
    ls))
    
+(define (map-each-pair proc ls)
+  (let loop ((ls ls))
+    (if (null? ls) '()
+        (cons (proc (car ls) (cdr ls)) (loop (cdr ls))))))
+   
+(define (make-for-each test)
+  (lambda (proc ifl)
+    (define (tproc curr next)
+      (let ((name (assq-ref curr 'name)) (type (assq-ref curr 'type))
+            (indx (assq-ref curr 'indx)) (code (assq-ref curr 'proc)))
+        (proc name type indx code next)))
+
+    (if (null? ifl) '()
+        (let loop ((res '()) (curr #f) (next #f) (rest ifl))
+          (cond
+           ((not next)
+            (cond
+             ((null? rest) (loop res curr '() rest))
+             ((test (car rest)) (loop res curr (car rest) (cdr rest)))
+             (else (loop res curr next (cdr rest)))))
+           ((not curr)
+            (loop res next #f rest))
+           ((pair? curr)
+            (loop (cons (tproc curr next) res) next #f rest))
+           (else
+            (reverse res)))))))
+
+(define for-each-request
+  (make-for-each (lambda (v) (eqv? (assq-ref v 'type) 'request))))
+  
+(define for-each-event
+  (make-for-each (lambda (v) (eqv? (assq-ref v 'type) 'event))))
+  
 (define (for-each-method proc ifl)
   (for-each-pair
    (lambda (meth next)
@@ -253,22 +280,7 @@ run program to wlsock
             (type (assq-ref meth 'type))
             (indx (assq-ref meth 'indx))
             (code (assq-ref meth 'proc)))
-       (proc name type indx code next)))
-   ifl))
-
-(define (map-each-pair proc ls)
-  (let loop ((ls ls))
-    (if (null? ls) '()
-        (cons (proc (car ls) (cdr ls)) (loop (cdr ls))))))
-   
-(define (map-each-method proc ifl)
-  (map-each-pair
-   (lambda (meth next)
-     (let* ((name (assq-ref meth 'name))
-            (type (assq-ref meth 'type))
-            (indx (assq-ref meth 'indx))
-            (code (assq-ref meth 'proc)))
-       (proc name type indx code next)))
+         (proc name type indx code next)))
    ifl))
 
 (define (fold-each-method proc seed ifl)
@@ -302,6 +314,12 @@ run program to wlsock
 (define (ss fmt . args)
   (string->symbol (apply simple-format #f fmt args)))
 
+(define (iface-of-type ifl type)
+  (map
+   (lambda (iface)
+     (filter (lambda (e) (eq? type (assq-ref e 'type))) iface))
+   ifl))
+
 (define (main)
   (let* ((args (parse-args (program-arguments)))
          (spec (car args))
@@ -309,21 +327,31 @@ run program to wlsock
          (nick (or (assq-ref (cdr args) 'nick) base))
          (sxml (call-with-input-file spec
                  (lambda (port) (xml->sxml port #:trim-whitespace? #t))))
-         (ifl ((sxpath '(protocol interface)) sxml))
-         (cil (call-with-values
-                  (lambda () (fold-values process-iface/c ifl 0 '()))
-                (lambda (ix cil) (reverse cil))))
+         (ifx ((sxpath '(protocol interface)) sxml))
+         (ifl (call-with-values
+                  (lambda () (fold-values process-iface/c ifx 0 '()))
+                (lambda (ix ifl) (reverse ifl))))
+         (cil ifl)
+         ;;(rq-il (iface-of-type ifl 'request))
+         ;;(ev-il (iface-of-type ifl 'event))
+         ;;(en-il (iface-of-type ifl 'enum))
          (code (string-append base "-client.scm"))
          (port (open-output-file code))
          (sf (lambda (fmt . args) (apply simple-format port fmt args)))
-         (pp (lambda (exp) (pretty-print exp port)))
-         )
+         (pp (lambda (exp) (pretty-print exp port))))
     ;;
-    (sf ";; ~A - from ~A\n\n" code spec)
+    ;;(pp (caddr (caddr ifl)))
+    ;;
+    (sf ";; ~A - from ~A\n\n" code (basename spec))
     ;;
     (pp `(define-public ,(ss "~A-iface-list" nick)
-           (quote ,(map string->symbol (map car cil)))))
+           (quote ,(map string->symbol (map car ifl)))))
     (newline port)
+    ;; enums dict's
+    (for-each-pair
+     (lambda (iface next)
+       #t)
+     cil)
     ;; opcode dict
     (sf "(define-public ~A-opcode-dict-list\n" nick)
     (sf "  '(")
@@ -332,7 +360,8 @@ run program to wlsock
        (sf "(")
        (for-each-method
         (lambda (name type indx code next)
-          (sf "(~A . ~A)" name indx)
+          (when (memq type '(request event))
+            (sf "(~A . ~A)" name indx))
           (if (pair? next) (sf " ") (sf ")")))
         (cddr iface))
        (if (pair? next) (sf "\n    ")  (sf "))\n")))
@@ -345,10 +374,10 @@ run program to wlsock
          ,@(map-each-pair
             (lambda (iface next)
               `(vector
-                ,@(fold-each-method
-                   (lambda (name type indx code next seed)
-                     (if (eq? type 'event) (cons code seed) seed))
-                   '() (cddr iface))))
+                ;;,@(fold-each-method
+                ,@(for-each-event
+                   (lambda (name type indx code next) code)
+                   (cddr iface))))
             cil))))
     (newline port)
     ;;
