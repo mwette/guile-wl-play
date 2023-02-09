@@ -78,6 +78,14 @@
 (define (sf fmt . args) (apply simple-format #t fmt args))
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 
+;; pretty-print to string, but without training newline
+(define* (pps exp #:key (per-line-prefix ""))
+  (let* ((port (open-output-string)))
+    (pretty-print exp port #:per-line-prefix per-line-prefix)
+    (let ((str (get-output-string port)))
+      (close-output-port port)
+      (substring str 0 (1- (string-length str))))))
+
 ;;(define (get-if tree name) ;; name = "wl_display"
 ;;  (protocol . interface (@ name "wl_display"))
 
@@ -156,17 +164,16 @@
            names types)
        (values obj-id ,@names))))
 
+(define (doc-it lambda-form docstr)
+  (match lambda-form
+    (`(lambda ,args . ,rest)
+     `(lambda ,args ,docstr . ,rest))
+    (`(lambda* ,args . ,rest)
+     `(lambda* ,args ,docstr . ,rest))))
+
 (define (process-iface/c sx ix ifl)
 
   (define (fix-args strings) (reverse (map string->symbol strings)))
-
-  (define (doc-it form type name desc)
-    (let ((docstr (string-append type " for " name)))
-      (match form
-        (`(lambda ,args . ,rest)
-         `(lambda ,args ,docstr . ,rest))
-        (`(lambda* ,args . ,rest)
-         `(lambda* ,args ,docstr . ,rest)))))
 
   (define (process-ent sx rx ex seed)
     (sxml-match sx
@@ -177,7 +184,6 @@
        (let loop ((names '()) (types '()) (args args))
          (if (null? args)
              (let* ((proc (make-encoder rx (fix-args names) (fix-args types)))
-                    ;;(proc (doc-it proc "request encoder" name desc))
                     (entry `((name . ,name) (type . request)
                              (indx . ,rx) (proc . ,proc))))
                (values (1+ rx) ex (cons entry seed)))
@@ -194,7 +200,6 @@
        (let loop ((names '()) (types '()) (args args))
          (if (null? args)
              (let* ((proc (make-decoder ex (fix-args names) (fix-args types)))
-                    (proc (doc-it proc "event decoder" name desc))
                     (entry `((name . ,name) (type . event)
                              (indx . ,ex) (proc . ,proc))))
                (values rx (1+ ex) (cons entry seed)))
@@ -205,9 +210,9 @@
       ((enum (@ (name ,name)) . ,ents)
        (let loop ((terms '()) (ents ents))
          (if (null? ents)
-             (let* ((entry `((name . ,name) (type . enum) (dict . ,terms))))
-               ;;(values rx ex (cons entry seed)))
-               (values rx ex seed))
+             (let* ((entry `((name . ,name) (type . enum)
+                             (dict . ,(reverse terms)))))
+               (values rx ex (cons entry seed)))
              (sxml-match (car ents)
                ((description . ,_)
                 (loop terms (cdr ents)))
@@ -245,13 +250,8 @@
     (if (null? ls) '()
         (cons (proc (car ls) (cdr ls)) (loop (cdr ls))))))
    
-(define (make-for-each test)
+(define (make-for-each test wrap)
   (lambda (proc ifl)
-    (define (tproc curr next)
-      (let ((name (assq-ref curr 'name)) (type (assq-ref curr 'type))
-            (indx (assq-ref curr 'indx)) (code (assq-ref curr 'proc)))
-        (proc name type indx code next)))
-
     (if (null? ifl) '()
         (let loop ((res '()) (curr #f) (next #f) (rest ifl))
           (cond
@@ -260,18 +260,31 @@
              ((null? rest) (loop res curr '() rest))
              ((test (car rest)) (loop res curr (car rest) (cdr rest)))
              (else (loop res curr next (cdr rest)))))
-           ((not curr)
-            (loop res next #f rest))
-           ((pair? curr)
-            (loop (cons (tproc curr next) res) next #f rest))
-           (else
-            (reverse res)))))))
+           ((not curr) (loop res next #f rest))
+           ((pair? curr) (loop (cons (wrap curr next proc) res) next #f rest))
+           (else (reverse res)))))))
 
 (define for-each-request
-  (make-for-each (lambda (v) (eqv? (assq-ref v 'type) 'request))))
-  
+  (make-for-each
+   (lambda (v) (eqv? (assq-ref v 'type) 'request))
+   (lambda (curr next proc)
+     (let ((name (assq-ref curr 'name))
+           (indx (assq-ref curr 'indx)) (code (assq-ref curr 'proc)))
+       (proc name indx code next)))))
+
 (define for-each-event
-  (make-for-each (lambda (v) (eqv? (assq-ref v 'type) 'event))))
+  (make-for-each (lambda (v) (eqv? (assq-ref v 'type) 'event))
+   (lambda (curr next proc)
+     (let ((name (assq-ref curr 'name))
+           (indx (assq-ref curr 'indx)) (code (assq-ref curr 'proc)))
+       (proc name indx code next)))))
+   
+(define for-each-enum
+  (make-for-each
+   (lambda (v) (eqv? (assq-ref v 'type) 'enum))
+   (lambda (curr next proc)
+     (let ((name (assq-ref curr 'name)) (dict (assq-ref curr 'dict)))
+       (proc name dict next)))))
   
 (define (for-each-method proc ifl)
   (for-each-pair
@@ -312,6 +325,8 @@
              '()))
 
 (define (ss fmt . args)
+  (apply simple-format #f fmt args))
+(define (sy fmt . args)
   (string->symbol (apply simple-format #f fmt args)))
 
 (define (iface-of-type ifl type)
@@ -319,6 +334,28 @@
    (lambda (iface)
      (filter (lambda (e) (eq? type (assq-ref e 'type))) iface))
    ifl))
+
+(define (eval-entry entry)
+  (cons (string->symbol (car entry))
+        (if (string-prefix? "0x" (cdr entry))
+            (string->number (substring (cdr entry) 2) 16)
+            (string->number (cdr entry) 10))))
+
+(define (make-ff port)
+  (let ((col 0) (is "                           "))
+    (lambda (in fmt . args)
+      (let* ((str (apply format #f fmt args))
+             (len (string-length str)))
+        (when (> (+ col len) 77)
+          (display "\n" port)
+          (set! col 0))
+        (when (and (positive? in) (zero? col))
+          (display (substring is 0 in) port)
+          (set! col (+ col in)))
+        (display str port)
+        (set! col (+ col len))
+        (when (char=? #\newline (string-ref str (1- (string-length str))))
+          (set! col 0))))))
 
 (define (main)
   (let* ((args (parse-args (program-arguments)))
@@ -331,58 +368,75 @@
          (ifl (call-with-values
                   (lambda () (fold-values process-iface/c ifx 0 '()))
                 (lambda (ix ifl) (reverse ifl))))
-         (cil ifl)
-         ;;(rq-il (iface-of-type ifl 'request))
-         ;;(ev-il (iface-of-type ifl 'event))
-         ;;(en-il (iface-of-type ifl 'enum))
          (code (string-append base "-client.scm"))
          (port (open-output-file code))
          (sf (lambda (fmt . args) (apply simple-format port fmt args)))
-         (pp (lambda (exp) (pretty-print exp port))))
-    ;;
-    ;;(pp (caddr (caddr ifl)))
+         (pp (lambda* (exp #:key (per-line-prefix ""))
+               (pretty-print exp port #:per-line-prefix per-line-prefix)))
+         (ff (make-ff port))
+         )
     ;;
     (sf ";; ~A - from ~A\n\n" code (basename spec))
-    ;;
-    (pp `(define-public ,(ss "~A-iface-list" nick)
-           (quote ,(map string->symbol (map car ifl)))))
-    (newline port)
-    ;; enums dict's
+    
+    (ff 0 "(define-public ~a-interface-list\n" nick)
+    (ff 2 "'(")
+    (pair-for-each
+     (lambda (p) (ff 4 "~a" (car p)) (if (pair? (cdr p)) (ff 4 " ")))
+     (map car ifl))
+    (ff 3 ")\n\n")
+    
+    ;; event opcode dict -- change to pp for each elt
+    (ff 0 "(define-public ~A-event-opcode-dict-list\n" nick)
+    (ff 2 "'(")
     (for-each-pair
      (lambda (iface next)
-       #t)
-     cil)
-    ;; opcode dict
-    (sf "(define-public ~A-opcode-dict-list\n" nick)
-    (sf "  '(")
-    (for-each-pair
-     (lambda (iface next)
-       (sf "(")
-       (for-each-method
-        (lambda (name type indx code next)
-          (when (memq type '(request event))
-            (sf "(~A . ~A)" name indx))
-          (if (pair? next) (sf " ") (sf ")")))
+       (ff 4 ";; ~a\n" (car iface))
+       (ff 4 "(")
+       (for-each-event
+        (lambda (name indx code next)
+          (ff 5 "(~A . ~A)" name indx)
+          (if (pair? next) (ff 4 " ")))
         (cddr iface))
-       (if (pair? next) (sf "\n    ")  (sf "))\n")))
-     cil)
-    (sf "\n")
+       (if (pair? next) (ff 5 ")\n") (ff 5 "))\n")))
+     ifl)
+    (ff 0 "\n")
+
     ;; decoders
+    (ff 0 "(define ~A-decoder-vec-list\n" nick)
+    (ff 2 "(list\n")
+    (for-each-pair
+     (lambda (iface next)
+       (ff 3 "(vector")
+       (for-each-request
+        (lambda (name indx code next)
+          (let* ((doc (ss "event decoder for ~A:~A" (car iface) name))
+                 (code (doc-it code doc)))
+            (newline port)
+            (display (pps code #:per-line-prefix "    ") port)
+            ;;(if (pair? next) (ff 0 "\n"))
+            ))
+        (cddr iface))
+       (ff 4 ")\n"))
+     ifl)
+    (ff 3 "))\n")
+    (ff 0 "\n")
+    (quit)
     (pp
-     `(define ,(ss "~A-decoder-vec-list" nick)
+     `(define ,(sy "~A-decoder-vec-list" nick)
         (list
          ,@(map-each-pair
             (lambda (iface next)
               `(vector
-                ;;,@(fold-each-method
                 ,@(for-each-event
-                   (lambda (name type indx code next) code)
+                   (lambda (name indx code next)
+                     (doc-it code (ss "event decoder for ~A:~A"
+                                      (car iface) name)))
                    (cddr iface))))
-            cil))))
+            ifl))))
     (newline port)
     ;;
     (pp
-     `(define ,(ss "~A-handler-vec-list" nick)
+     `(define ,(sy "~A-handler-vec-list" nick)
         (list
          ,@(map-each-pair
             (lambda (iface next)
@@ -391,14 +445,29 @@
                   (filter
                    (lambda (x) (eq? 'event (assq-ref x 'type)))
                    (cddr iface)))))
-            cil))))
+            ifl))))
     (newline port)
+    
     ;;
-    (sf "(add-iface-list ~A-iface-list)\n" nick)
-    (sf "(add-opcode-dict-list ~A-opcode-dict-list)\n" nick)
+    (sf "(add-iface-list ~A-interface-list)\n" nick)
+    (sf "(add-opcode-dict-list ~A-event-opcode-dict-list)\n" nick)
     (sf "(add-decoder-vec-list ~A-decoder-vec-list)\n" nick)
     (sf "(add-handler-vec-list ~A-handler-vec-list)\n" nick)
     (newline port)
+    
+    #|
+    ;; enums dict's
+    (for-each-pair
+     (lambda (iface next)
+       (for-each-enum
+        (lambda (name dict next)
+          (sf "(define ~A:~A-val '\n" (car iface) name)
+          (pp (map eval-entry dict) #:per-line-prefix "   ")
+          (sf "))\n")
+          #f)
+        iface))
+     ifl)
+    |#
     
     ;; encoders
     (for-each
@@ -407,10 +476,10 @@
          (for-each-method
           (lambda (name type indx code next)
             (if (eq? type 'request)
-                (let ((fn (ss "encode-~A:~A" if-name name)))
+                (let ((fn (sy "encode-~A:~A" if-name name)))
                   (pp `(define-public ,fn ,code)) (newline port))))
           (cddr iface))))
-     cil)
+     ifl)
     ;;
     (sf ";; --- last line ---\n")
     (if port (close-port port))
