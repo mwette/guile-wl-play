@@ -258,7 +258,6 @@ exec $GDB_PFX guile $0
   (let ((val (vector-ref object-value-vec obj-id)))
     (if (condition? val) (signal-condition! val))
     (vector-set! object-value-vec obj-id #f))
-  (sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data)
   (if #f #f))
 
 ;; --- wl_compositor
@@ -364,9 +363,7 @@ exec $GDB_PFX guile $0
   ;;(sferr "output::scale called\n")
   (if #f #f))
   
-(define (handle-wl_output:release . args)
-  ;;(sferr "output::release called\n")
-  (if #f #f))
+(define-wl-request wl_output release)
   
 (define (handle-wl_output:name . args)
   ;;(sferr "output::name called\n")
@@ -475,7 +472,6 @@ exec $GDB_PFX guile $0
   (wl-event wl_output mode)
   (wl-event wl_output done)
   (wl-event wl_output scale)
-  (wl-event wl_output release)
   (wl-event wl_output name)
   (wl-event wl_output description)
 
@@ -624,18 +620,50 @@ exec $GDB_PFX guile $0
    #:hz 0 #:install-suspendable-ports? #f))
 
 
+;; === gmacs =========================
+
+;; woolly-macs
+
+#|
+ dispbuffer - what wayland displays
+ decor - decorations
+ frame - what you see inside the displayed-buffer  Ch 26
+   parameters, keep:
+     name left top height width (in pixels) minibuffer font
+     foreground-color background-color mouse-color cursor-color
+     internal-border-width unsplittable visibility 
+   parameters, toss:
+     auto-raise auto-lower vertical-scroll-bars horizontal-scroll-bars
+     icon-type border color cursor-type border-width parent-id
+ window - display of text buffer
+   NEW - text voids (per-line region of blank space -- for diagrams and
+         equations )
+ modeline -
+|#
+
+;; use transients
+#|
+(define-record-type <frame>
+  (make-frame alist)
+  frame?
+  (name frame-name set-xxx)
+  )
+
+|#
+
+
 ;; === appl ===========================
 
 (use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
 
-(define my-pool-id #f)
-(define my-surf-id #f)
-(define my-buf-id #f)
-(define my-buf-bv #f)
-(define my-buf-fd #f)
-(define my-xsrf-id #f)
-(define my-topl-id #f)
+(define my-pool-id #f)                  ; shm_pool id
+(define my-surf-id #f)                  ; wl_surface id
+(define my-buf-id #f)                   ; wl_buffer id
+(define my-buf-bv #f)                   ; buffer bv
+(define my-buf-fd #f)                   ; buffer fd
+(define my-xsrf-id #f)                  ; xdg_surface
+(define my-topl-id #f)                  ; toplevel
 
 #|
 (define-record-type <shm-pool>

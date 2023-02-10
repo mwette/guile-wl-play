@@ -363,9 +363,7 @@ exec $GDB_PFX guile $0
   ;;(sferr "output::scale called\n")
   (if #f #f))
   
-(define (handle-wl_output:release . args)
-  ;;(sferr "output::release called\n")
-  (if #f #f))
+(define-wl-request wl_output release)
   
 (define (handle-wl_output:name . args)
   ;;(sferr "output::name called\n")
@@ -474,7 +472,6 @@ exec $GDB_PFX guile $0
   (wl-event wl_output mode)
   (wl-event wl_output done)
   (wl-event wl_output scale)
-  (wl-event wl_output release)
   (wl-event wl_output name)
   (wl-event wl_output description)
 

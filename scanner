@@ -86,14 +86,29 @@
       (close-output-port port)
       (substring str 0 (1- (string-length str))))))
 
-;;(define (get-if tree name) ;; name = "wl_display"
-;;  (protocol . interface (@ name "wl_display"))
+(define (make-ff port)
+  (let ((col 0) (is "                           "))
+    (lambda (in fmt . args)
+      (let* ((str (apply format #f fmt args))
+             (len (string-length str)))
+        (when (> (+ col len) 76)
+          (display "\n" port)
+          (set! col 0))
+        (when (and (positive? in) (zero? col))
+          (display (substring is 0 in) port)
+          (set! col (+ col in)))
+        (display str port)
+        (set! col (+ col len))
+        (when (char=? #\newline (string-ref str (1- (string-length str))))
+          (set! col 0))))))
 
 (define endness (native-endianness))
+
 (define msg-size-offset
   (cond
    ((equal? endness (endianness big)) 4)
    ((equal? endness (endianness little)) 6)))
+
 (define opcode-offset
   (cond
    ((equal? endness (endianness big)) 6)
@@ -173,7 +188,20 @@
 
 (define (process-iface/c sx ix ifl)
 
-  (define (fix-args strings) (reverse (map string->symbol strings)))
+  (define (fix-args strings)
+    (reverse (map string->symbol strings)))
+
+  (define (parse-enum-fields ents)
+    (let loop ((terms '()) (ents ents))
+      (if (null? ents) (reverse terms)
+          (sxml-match (car ents)
+            ((description . ,_)
+             (loop terms (cdr ents)))
+            ((entry (@ (name ,name) (value ,value))
+                    (description ,text))
+             (loop (acons name value terms) (cdr ents)))
+            ((entry (@ (name ,name) (value ,value)))
+             (loop (acons name value terms) (cdr ents)))))))
 
   (define (process-ent sx rx ex seed)
     (sxml-match sx
@@ -208,16 +236,9 @@
                 (loop (cons name names) (cons type types) (cdr args)))))))
 
       ((enum (@ (name ,name)) . ,ents)
-       (let loop ((terms '()) (ents ents))
-         (if (null? ents)
-             (let* ((entry `((name . ,name) (type . enum)
-                             (dict . ,(reverse terms)))))
-               (values rx ex (cons entry seed)))
-             (sxml-match (car ents)
-               ((description . ,_)
-                (loop terms (cdr ents)))
-               ((entry (@ (name ,name) (value ,value)))
-                (loop (acons name value terms) (cdr ents)))))))
+       (let* ((terms (parse-enum-fields ents))
+              (entry `((name . ,name) (type . enum) (dict . ,terms))))
+         (values rx ex (cons entry seed))))
 
       (,_ (sf "process-ent MISSED:\n") (pp sx) (quit))))
 
@@ -227,18 +248,6 @@
          (lambda () (fold-values process-ent elts 0 0 '()))
        (lambda (mr me ents)
          (values (1+ ix) (cons (cons* name ix (reverse ents)) ifl)))))))
-
-(define get-these
-  '(
-    ("wl_display" . "get_registry")
-    ("wl_registry" . "bind")
-    ("wl_registry" . "global")
-    ("wl_keyboard" . "enter")
-    ("wl_shm" . "create_pool")
-    ))
-
-(define (lkup dict if el)
-  (assoc-ref (assoc-ref dict if) el))
 
 (define (for-each-pair proc ls)
   (pair-for-each
@@ -307,7 +316,7 @@
                (tail (cdr ifl)))
           (proc name type indx code tail (loop tail))))))
 
-;;;
+;; ============================================================================
 
 (use-modules (srfi srfi-37))
 
@@ -336,26 +345,10 @@
    ifl))
 
 (define (eval-entry entry)
-  (cons (string->symbol (car entry))
-        (if (string-prefix? "0x" (cdr entry))
-            (string->number (substring (cdr entry) 2) 16)
-            (string->number (cdr entry) 10))))
-
-(define (make-ff port)
-  (let ((col 0) (is "                           "))
-    (lambda (in fmt . args)
-      (let* ((str (apply format #f fmt args))
-             (len (string-length str)))
-        (when (> (+ col len) 77)
-          (display "\n" port)
-          (set! col 0))
-        (when (and (positive? in) (zero? col))
-          (display (substring is 0 in) port)
-          (set! col (+ col in)))
-        (display str port)
-        (set! col (+ col len))
-        (when (char=? #\newline (string-ref str (1- (string-length str))))
-          (set! col 0))))))
+  (let ((key (car entry)) (val (cdr entry)))
+    (if (string-prefix? "0x" val)
+        (cons key (ss "#x~A" (substring val 2)))
+        entry)))
 
 (define (main)
   (let* ((args (parse-args (program-arguments)))
@@ -451,7 +444,7 @@
           (ff 2 "'(")
           (for-each-pair
            (lambda (curr next)
-             (ff 4 "~a" curr)
+             (ff 4 "~a" (eval-entry curr))
              (if (pair? next) (ff 2 " ") (ff 2 "))\n")))
            dict)
           (newline port))
