@@ -59,12 +59,7 @@ exec $GDB_PFX guile $0
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
-(define my-mmap
-  (cond
-   ((provided? 'mman) mmap)
-   (else
-    (load-extension "xmmap" "scm_init_xmmap")
-    xmmap)))
+(define my-mmap mmap)
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
@@ -643,29 +638,7 @@ exec $GDB_PFX guile $0
   (bv shm-pool-bv))
 |#
 
-(define* (create-file-buffer #:optional (size #x1000000))
-  (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
-         (fd (port->fdes port))
-         (bv (my-mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
-    (set! my-buf-bv bv)
-    (set! my-buf-fd fd)
-    (if #f #f)))
-
-(define (draw-buffer-1)
-  (let loop ((ix 0) (iy 0) (lt #xff666666) (rt #xffeeeeee))
-    (cond
-     ((< ix 500)
-      (if (< (remainder ix 16) 8)
-          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) (* ix 4)) lt)
-          (bytevector-u32-native-set! my-buf-bv (+ (* iy 2000) (* ix 4)) rt))
-      (loop (1+ ix) iy lt rt))
-     ((< iy 300)
-      (if (= (remainder iy 16) 15)
-          (loop 0 (1+ iy) rt lt)
-          (loop 0 (1+ iy) lt rt)))))
-  (if #f #f))
-
-(define (draw-buffer-2)
+(define (draw-buffer)
   (let* ((format 'CAIRO_FORMAT_ARGB32)
          (format 'CAIRO_FORMAT_RGB24)
          (buffer my-buf-bv)
@@ -673,55 +646,37 @@ exec $GDB_PFX guile $0
          (srf (cairo_image_surface_create_for_data
                buffer format width height stride))
          (cro (cairo_create srf))
-         (extents (make-cairo_text_extents_t))
          (text "Hello, world!"))
     (bytevector-fill! buffer #xee)
     
-    (cairo_move_to cro 0.0 0.0)
-    (cairo_move_to cro 20.0 20.0)
-    (cairo_line_to cro 120.0 120.0)
-    (cairo_stroke cro)
-
     (cairo_select_font_face
      cro "Sans" 'CAIRO_FONT_SLANT_NORMAL 'CAIRO_FONT_WEIGHT_NORMAL)
     (cairo_set_font_size cro 32.0)
-    (cairo_text_extents cro text (pointer-to extents))
-    (cairo_move_to cro 50.0 50.0)
+    (cairo_move_to cro 120.0 50.0)
     (cairo_show_text cro text)
+
+    (cairo_move_to cro 120.0 80.0)
+    (cairo_line_to cro 140.0 90.0)
+    (cairo_line_to cro 160.0 80.0)
+    (cairo_line_to cro 180.0 90.0)
+    (cairo_line_to cro 200.0 80.0)
+    (cairo_line_to cro 220.0 90.0)
+    (cairo_line_to cro 240.0 80.0)
+    (cairo_line_to cro 260.0 90.0)
+    (cairo_line_to cro 280.0 80.0)
+    (cairo_line_to cro 300.0 90.0)
+    (cairo_line_to cro 320.0 80.0)
+    (cairo_stroke cro)
 
     (if #f #f)))
 
-(define (draw-buffer-3)
-  (let* ((format 'CAIRO_FORMAT_RGB24)
-         (buffer my-buf-bv)
-         (width 500) (height 300) (stride (* width 4))
-         (srf (cairo_image_surface_create_for_data
-               buffer format width height stride))
-         (cr (cairo_create srf))
-         (xc 128.0) (yc 128.0) (radius 100.0)
-         (angle1 (* 45.0 (/ M_PI 180.0)))
-         (angle2 (* 180.0 (/ M_PI 180.0))))
-    (bytevector-fill! buffer #xee)
-    
-    (cairo_set_line_width cr 10.0)
-    (cairo_arc cr xc yc radius angle1 angle2)
-    (cairo_stroke cr)
-
-    (cairo_set_source_rgba cr 1 0.2 0.2 0.6)
-    (cairo_set_line_width cr 6.0)
-
-    (cairo_arc cr xc yc 10.0 0.0 (* 2.0 M_PI))
-    (cairo_fill cr)
-
-    (cairo_arc cr xc yc radius angle1 angle1)
-    (cairo_line_to cr xc yc)
-    (cairo_arc cr xc yc radius angle2 angle2)
-    (cairo_line_to cr xc yc)
-    (cairo_stroke cr)))
-
-
-(define draw-buffer draw-buffer-2)
-
+(define* (create-file-buffer #:optional (size #x1000000))
+  (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
+         (fd (port->fdes port))
+         (bv (my-mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
+    (set! my-buf-bv bv)
+    (set! my-buf-fd fd)
+    (if #f #f)))
 
 ;; read xdg_surface description in xdg-shell.xml
 (define (create-it)
