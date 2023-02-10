@@ -604,7 +604,6 @@ exec $GDB_PFX guile $0
      (sync-and-wait)
      (init-globals)
      (sync-and-wait)
-     (create-file-buffer)
      (spawn-fiber monitor)
      ;;
      (create-it)
@@ -620,23 +619,82 @@ exec $GDB_PFX guile $0
 (use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
 
-(define my-pool-id #f)
-(define my-surf-id #f)
-(define my-buf-id #f)
-(define my-buf-bv #f)
-(define my-buf-fd #f)
-(define my-xsrf-id #f)
-(define my-topl-id #f)
+(define (wl-format->cairo wlf)
+  (case wlf
+    ((0 argb8888) 'CAIRO_FORMAT_ARGB32)
+    ((1 xrgb8888) 'CAIRO_FORMAT_RGB24)))
 
-#|
-(define-record-type <shm-pool>
-  (make-shm-pool port fd size bv)
-  shm-pool?
-  (port shm-pool-port)
-  (fd shm-pool-fd)
-  (size shm-pool-size)
-  (bv shm-pool-bv))
-|#
+(define argb8888 0)
+(define xrgb8888 1)
+
+(define-syntax gen-id-using
+  (syntax-rules (<>)
+    ((_ (ft ... <> bk ...) more ...)
+     (let ((id (alloc-id)))
+       (ft ... id bk ...)
+       more ...
+       id))))
+
+(define gran #x100000)                  ; bufsize granularity
+
+(define-record-type <ctx>
+  (make-ctx port width height format
+            smp-id srf-id xrf-id top-id
+            dsp-id drw-id dsp-cr drw-cr)
+  ctx?
+  (port ctx-port set-ctx-port!)
+  (width ctx-width set-ctx-width!)
+  (height ctx-height set-ctx-height!)
+  (format ctx-format set-ctx-format!)
+  (smp-id ctx-smp-id set-ctx-smp-id!)
+  (srf-id ctx-srf-id set-ctx-srf-id!)
+  (xrf-id ctx-xrf-id set-ctx-xrf-id!)
+  (top-id ctx-top-id set-ctx-top-id!)
+  (dsp-id ctx-dsp-id set-ctx-dsp-id!)
+  (drw-id ctx-drw-id set-ctx-drw-id!)
+  (dsp-cr ctx-dsp-cr set-ctx-dsp-cr!)
+  (drw-cr ctx-drw-cr set-ctx-drw-cr!))
+  
+
+(define (app-init width height format)
+  (let* ((format (if (symbol? format) (assq-ref wl_shm:format-enum format)))
+         (stride (* width 4))
+         (size (* stride height))
+         (bufsize (* gran (quotient (+ (* 2 size) (1- gran)) gran)))
+         (port (let ((port (tmpfile))) (truncate-file port bufsize) port))
+         (fd (port->fdes port))
+         (bv (my-mmap 0 bufsize (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+         (smp-id (gen-id-using (wl_shm:create_pool shm-id <> fd bufsize)))
+         (srf-id (gen-id-using (wl_compositor:create_surface comp-id <>)))
+         (xrf-id (gen-id-using (xdg_wm_base:get_xdg_surface base-id <> srf-id)))
+         (top-id (gen-id-using (xdg_surface:get_toplevel xrf-id <>)))
+         (dsp-id (gen-id-using
+                  (wl_shm_pool:create_buffer
+                   smp-id <> 0 width height stride format)))
+         (drw-id (gen-id-using
+                  (wl_shm_pool:create_buffer
+                   smp-id <> size width height stride format)))
+         (dsp-cr (let* ((buffer (bytevector->pointer bv 0))
+                        (format (wl-format->cairo format))
+                        (srf (cairo_image_surface_create_for_data
+                              buffer format width height stride)))
+                   (cairo_create srf)))
+         (dsp-cr (let* ((buffer (bytevector->pointer bv size))
+                        (format (wl-format->cairo format))
+                        (srf (cairo_image_surface_create_for_data
+                              buffer format width height stride)))
+                   (cairo_create srf)))
+         (ctx (make-ctx port width height format
+                        smp-id srf-id xrf-id top-id
+                        dsp-id drw-id dsp-cr drw-c)))
+    (set-object! smp-id 'wl_shm_pool ctx)
+    (set-object! srf-id 'wl_surface ctx)
+    ;;(set-object! xrf-id 'xdg_surface ctx) FIXME
+    (set-object! xrf-id 'xdg_surface (lambda (obj-id) (show-it ctx)))
+    (set-object! top-id 'xdg_toplevel ctx)
+    (set-object! dsp-id 'wl_buffer ctx)
+    (set-object! drw-id 'wl_buffer ctx)
+    ctx))
 
 (define (draw-buffer)
   (let* ((format 'CAIRO_FORMAT_ARGB32)
@@ -670,54 +728,35 @@ exec $GDB_PFX guile $0
 
     (if #f #f)))
 
-(define* (create-file-buffer #:optional (size #x1000000))
-  (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
-         (fd (port->fdes port))
-         (bv (my-mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
-    (set! my-buf-bv bv)
-    (set! my-buf-fd fd)
-    (if #f #f)))
-
 ;; read xdg_surface description in xdg-shell.xml
 (define (create-it)
-  (set! io-debug #f)
-  (set! my-surf-id (let* ((id (alloc-id)))
-                     (wl_compositor:create_surface comp-id id)
-                     (set-object! id 'wl_surface show-it)
-                     id))
-  (set! my-xsrf-id (let ((id (alloc-id)))
-                     (xdg_wm_base:get_xdg_surface base-id id my-surf-id)
-                     (set-object! id 'xdg_surface show-it)
-                     id))
-  (set! my-topl-id (let ((id (alloc-id)))
-                     (xdg_surface:get_toplevel my-xsrf-id id)
-                     (set-object! id 'xdg_toplevel)
-                     id))
-  (xdg_toplevel:set_title my-topl-id "wl-play")
-  (xdg_toplevel:set_max_size my-topl-id 500 300)
-  (xdg_toplevel:set_min_size my-topl-id 500 300)
-  (wl_surface:commit my-surf-id)
-  (if #f #f))
-
+  (let* ((width 500) (height 300) (format 'xrgb8888)
+         (ctx (app-init width height format))
+         (top-id (ctx-top ctx))
+         (srf-id (ctx-srf ctx))
+         )
+    (set! io-debug #f)
+    (xdg_toplevel:set_title top-id "wl-play")
+    (xdg_toplevel:set_max_size top-id width height)
+    (xdg_toplevel:set_min_size top-id width height)
+    (wl_surface:commit srf-id)
+    (if #f #f)))
+  
 ;; This gets called in response to xdg_surface:configure event.
-(define (show-it obj-id)
-  (let ((id (alloc-id)))
-    ;; 300 x 500 x 4 = 600000
-    (wl_shm:create_pool shm-id id my-buf-fd #x1000000)
-    (set-object! id 'wl_shm_pool)
-    (set! my-pool-id id)
-    id)
-  (let* ((id (alloc-id))
-         (offset 0) (width 500) (height 300) (stride (* width 4)) (format 1))
-    (wl_shm_pool:create_buffer my-pool-id id offset width height stride format)
-    (set-object! id 'wl_buffer)
-    (set! my-buf-id id)
-    id)
-  (wl_shm_pool:destroy my-pool-id)
-  (set! my-pool-id #f)
-  (draw-buffer)
-  (wl_surface:attach my-surf-id my-buf-id 0 0)
-  (wl_surface:commit my-surf-id)
+(define (show-it ctx)
+  (let* ((drw-cr (ctx-drw-cr ctx))
+         (dpy-cr (ctx-dpy-cr ctx))
+         (srf-id (ctx-srf-id ctx))
+         (drw-id (ctx-drw-id ctx))
+         (dpy-id (ctx-dpy-id ctx)))
+  (draw-buffer drw-cr)
+  (wl_surface:attach srf-id drw-id 0 0)
+  (wl_surface:commit srf-id)
+  ;; buffer swap
+  (ctx-set-drw-cr! ctx dpy-cr)
+  (ctx-set-dpy-cr! ctx drw-cr)
+  (ctx-set-drw-id! ctx dpy-id)
+  (ctx-set-dpy-id! ctx drw-id)
   (if #f #f))
 
 (appl-main)
