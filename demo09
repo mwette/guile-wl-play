@@ -639,17 +639,38 @@ exec $GDB_PFX guile $0
    NEW - text voids (per-line region of blank space -- for diagrams and
          equations )
  modeline -
+
 |#
 
+(define-record-type <ctx>
+  (make-ctx dpy drw)
+  ctx?
+  (pool-id ctx-pid)
+  (surf-id ctx-sid)
+  (dpy-id ctx-dpy-id)
+  (drw-id ctx-drw-id)
+  )
+
+(define (ctx-commit ctx)
+  (let ((srf (ctx-srf ctx)) (dpy (ctx-dpy ctx)) (drw (ctx-drw ctx)))
+    (wl_surface:attach srf drw 0 0)
+    (wl_surface:commit srf)
+    ;; kludge
+    (set-dpy! ctx drw)
+    (set-drw! ctx dpy)
+    ctx))
+
 ;; use transients
-#|
 (define-record-type <frame>
   (make-frame alist)
   frame?
   (name frame-name set-xxx)
   )
 
-|#
+(define buffer-size #x4000000) ; 64 MB
+
+(define (draw-frame ctx frame)
+  #f)
 
 
 ;; === appl ===========================

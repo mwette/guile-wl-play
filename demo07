@@ -633,16 +633,6 @@ exec $GDB_PFX guile $0
 (define my-xsrf-id #f)
 (define my-topl-id #f)
 
-#|
-(define-record-type <shm-pool>
-  (make-shm-pool port fd size bv)
-  shm-pool?
-  (port shm-pool-port)
-  (fd shm-pool-fd)
-  (size shm-pool-size)
-  (bv shm-pool-bv))
-|#
-
 (define* (create-file-buffer #:optional (size #x1000000))
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))

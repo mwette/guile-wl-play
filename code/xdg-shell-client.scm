@@ -74,42 +74,42 @@
 (add-decoder-vec-list xdg-shell-decoder-vec-list)
 (add-handler-vec-list xdg-shell-handler-vec-list)
 
-(define xdg_wm_base:error-enum
+(define-public xdg_wm_base:error-enum
   '((role . 0) (defunct_surfaces . 1) (not_the_topmost_popup . 2) 
     (invalid_popup_parent . 3) (invalid_surface_state . 4) 
     (invalid_positioner . 5)))
 
-(define xdg_positioner:error-enum
+(define-public xdg_positioner:error-enum
   '((invalid_input . 0)))
 
-(define xdg_positioner:anchor-enum
+(define-public xdg_positioner:anchor-enum
   '((none . 0) (top . 1) (bottom . 2) (left . 3) (right . 4) (top_left . 5) 
     (bottom_left . 6) (top_right . 7) (bottom_right . 8)))
 
-(define xdg_positioner:gravity-enum
+(define-public xdg_positioner:gravity-enum
   '((none . 0) (top . 1) (bottom . 2) (left . 3) (right . 4) (top_left . 5) 
     (bottom_left . 6) (top_right . 7) (bottom_right . 8)))
 
-(define xdg_positioner:constraint_adjustment-enum
+(define-public xdg_positioner:constraint_adjustment-enum
   '((none . 0) (slide_x . 1) (slide_y . 2) (flip_x . 4) (flip_y . 8) 
     (resize_x . 16) (resize_y . 32)))
 
-(define xdg_surface:error-enum
+(define-public xdg_surface:error-enum
   '((not_constructed . 1) (already_constructed . 2) 
     (unconfigured_buffer . 3)))
 
-(define xdg_toplevel:error-enum
+(define-public xdg_toplevel:error-enum
   '((invalid_resize_edge . 0)))
 
-(define xdg_toplevel:resize_edge-enum
+(define-public xdg_toplevel:resize_edge-enum
   '((none . 0) (top . 1) (bottom . 2) (left . 4) (top_left . 5) 
     (bottom_left . 6) (right . 8) (top_right . 9) (bottom_right . 10)))
 
-(define xdg_toplevel:state-enum
+(define-public xdg_toplevel:state-enum
   '((maximized . 1) (fullscreen . 2) (resizing . 3) (activated . 4) 
     (tiled_left . 5) (tiled_right . 6) (tiled_top . 7) (tiled_bottom . 8)))
 
-(define xdg_popup:error-enum
+(define-public xdg_popup:error-enum
   '((invalid_grab . 0)))
 
 (define-public encode-xdg_wm_base:destroy

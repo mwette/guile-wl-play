@@ -440,7 +440,7 @@
      (lambda (iface next)
        (for-each-enum
         (lambda (name dict next)
-          (ff 0 "(define ~A:~A-enum\n" (car iface) name)
+          (ff 0 "(define-public ~A:~A-enum\n" (car iface) name)
           (ff 2 "'(")
           (for-each-pair
            (lambda (curr next)

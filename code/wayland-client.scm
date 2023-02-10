@@ -442,14 +442,14 @@
 (add-decoder-vec-list wayland-decoder-vec-list)
 (add-handler-vec-list wayland-handler-vec-list)
 
-(define wl_display:error-enum
+(define-public wl_display:error-enum
   '((invalid_object . 0) (invalid_method . 1) (no_memory . 2) 
     (implementation . 3)))
 
-(define wl_shm:error-enum
+(define-public wl_shm:error-enum
   '((invalid_format . 0) (invalid_stride . 1) (invalid_fd . 2)))
 
-(define wl_shm:format-enum
+(define-public wl_shm:format-enum
   '((argb8888 . 0) (xrgb8888 . 1) (c8 . #x20203843) (rgb332 . #x38424752) 
     (bgr233 . #x38524742) (xrgb4444 . #x32315258) (xbgr4444 . #x32314258) 
     (rgbx4444 . #x32315852) (bgrx4444 . #x32315842) (argb4444 . #x32315241) 
@@ -492,75 +492,75 @@
     (xrgb16161616 . #x38345258) (xbgr16161616 . #x38344258) 
     (argb16161616 . #x38345241) (abgr16161616 . #x38344241)))
 
-(define wl_data_offer:error-enum
+(define-public wl_data_offer:error-enum
   '((invalid_finish . 0) (invalid_action_mask . 1) (invalid_action . 2) 
     (invalid_offer . 3)))
 
-(define wl_data_source:error-enum
+(define-public wl_data_source:error-enum
   '((invalid_action_mask . 0) (invalid_source . 1)))
 
-(define wl_data_device:error-enum
+(define-public wl_data_device:error-enum
   '((role . 0)))
 
-(define wl_data_device_manager:dnd_action-enum
+(define-public wl_data_device_manager:dnd_action-enum
   '((none . 0) (copy . 1) (move . 2) (ask . 4)))
 
-(define wl_shell:error-enum
+(define-public wl_shell:error-enum
   '((role . 0)))
 
-(define wl_shell_surface:resize-enum
+(define-public wl_shell_surface:resize-enum
   '((none . 0) (top . 1) (bottom . 2) (left . 4) (top_left . 5) 
     (bottom_left . 6) (right . 8) (top_right . 9) (bottom_right . 10)))
 
-(define wl_shell_surface:transient-enum
+(define-public wl_shell_surface:transient-enum
   '((inactive . #x1)))
 
-(define wl_shell_surface:fullscreen_method-enum
+(define-public wl_shell_surface:fullscreen_method-enum
   '((default . 0) (scale . 1) (driver . 2) (fill . 3)))
 
-(define wl_surface:error-enum
+(define-public wl_surface:error-enum
   '((invalid_scale . 0) (invalid_transform . 1) (invalid_size . 2) 
     (invalid_offset . 3)))
 
-(define wl_seat:capability-enum
+(define-public wl_seat:capability-enum
   '((pointer . 1) (keyboard . 2) (touch . 4)))
 
-(define wl_seat:error-enum
+(define-public wl_seat:error-enum
   '((missing_capability . 0)))
 
-(define wl_pointer:error-enum
+(define-public wl_pointer:error-enum
   '((role . 0)))
 
-(define wl_pointer:button_state-enum
+(define-public wl_pointer:button_state-enum
   '((released . 0) (pressed . 1)))
 
-(define wl_pointer:axis-enum
+(define-public wl_pointer:axis-enum
   '((vertical_scroll . 0) (horizontal_scroll . 1)))
 
-(define wl_pointer:axis_source-enum
+(define-public wl_pointer:axis_source-enum
   '((wheel . 0) (finger . 1) (continuous . 2) (wheel_tilt . 3)))
 
-(define wl_keyboard:keymap_format-enum
+(define-public wl_keyboard:keymap_format-enum
   '((no_keymap . 0) (xkb_v1 . 1)))
 
-(define wl_keyboard:key_state-enum
+(define-public wl_keyboard:key_state-enum
   '((released . 0) (pressed . 1)))
 
-(define wl_output:subpixel-enum
+(define-public wl_output:subpixel-enum
   '((unknown . 0) (none . 1) (horizontal_rgb . 2) (horizontal_bgr . 3) 
     (vertical_rgb . 4) (vertical_bgr . 5)))
 
-(define wl_output:transform-enum
+(define-public wl_output:transform-enum
   '((normal . 0) (90 . 1) (180 . 2) (270 . 3) (flipped . 4) (flipped_90 . 5)
    (flipped_180 . 6) (flipped_270 . 7)))
 
-(define wl_output:mode-enum
+(define-public wl_output:mode-enum
   '((current . #x1) (preferred . #x2)))
 
-(define wl_subcompositor:error-enum
+(define-public wl_subcompositor:error-enum
   '((bad_surface . 0)))
 
-(define wl_subsurface:error-enum
+(define-public wl_subsurface:error-enum
   '((bad_surface . 0)))
 
 (define-public encode-wl_display:sync
