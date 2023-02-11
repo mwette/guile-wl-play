@@ -80,7 +80,9 @@ exec $GDB_PFX guile $0
 (use-modules (fibers channels))
 
 (use-modules (ice-9 pretty-print))
-(define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
+(define (sferr fmt . args)
+  (apply simple-format (current-error-port) fmt args)
+  (force-output (current-error-port)))
 (define (pperr exp) (pretty-print exp (current-error-port)))
 
 ;; ============================================================================
@@ -608,7 +610,7 @@ exec $GDB_PFX guile $0
      ;;
      (create-it)
      ;;(wait done-cond)
-     (fsleep 3.0)
+     (fsleep 4.0)
      (force-output (current-error-port))
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))
@@ -700,29 +702,60 @@ exec $GDB_PFX guile $0
     (set-object! drw-id 'wl_buffer ctx)
     ctx))
 
-(define (draw-buffer cr)
-  (let* ((text "Hello, world!"))
-    
-    (cairo_select_font_face
-     cr "Sans" 'CAIRO_FONT_SLANT_NORMAL 'CAIRO_FONT_WEIGHT_NORMAL)
-    (cairo_set_font_size cr 32.0)
-    (cairo_move_to cr 120.0 50.0)
-    (cairo_show_text cr text)
+(define (draw-buffer-frame cr)
+  #f)
 
-    (cairo_move_to cr 120.0 80.0)
-    (cairo_line_to cr 140.0 90.0)
-    (cairo_line_to cr 160.0 80.0)
-    (cairo_line_to cr 180.0 90.0)
-    (cairo_line_to cr 200.0 80.0)
-    (cairo_line_to cr 220.0 90.0)
-    (cairo_line_to cr 240.0 80.0)
-    (cairo_line_to cr 260.0 90.0)
-    (cairo_line_to cr 280.0 80.0)
-    (cairo_line_to cr 300.0 90.0)
-    (cairo_line_to cr 320.0 80.0)
-    (cairo_stroke cr)
+(define get-text
+  (let ((ix 0)
+        (text (vector "a good day, I'd say,"
+                      "when the wine is red,"
+                      "and the code is working"
+                      "I could go like this more"
+                      "so could you, I guess"
+                      )))
+    (lambda ()
+      (if (> ix (vector-length text))
+          (set! ix 1)
+          (set! ix (1+ ix)))
+      (vector-ref text (1- ix)))))
+  
+(define (draw-buffer ctx)
+  (let* ((width (ctx-width ctx))
+         (height (ctx-height ctx))
+         (cr (ctx-drw-cr ctx))
+         (face "monospace")
+         (slant 'CAIRO_FONT_SLANT_NORMAL)
+         (weight 'CAIRO_FONT_WEIGHT_NORMAL)
+         (text "Hello, world!")
+         ;;(x (sferr "1\n"))
+         (extents (let ((extents (make-cairo_font_extents_t)))
+                    (cairo_select_font_face cr face slant weight)
+                    (cairo_set_font_size cr 16.0)
+                    (cairo_font_extents cr (pointer-to extents))
+                    extents))
+         ;;(x (sferr "2\n"))
+         (pad 4.0)
+         (base-x pad)
+         (base-y (- 300.0 pad (fh-object-ref extents 'descent)))
+         ;;(x (sferr "3\n"))
+         (txhei (fh-object-ref extents 'height))
+         ;;(x (sferr "4\n"))
+         )
+    ;; scroll up
+    #|
+    (cairo_set_source_surface cr (ctx-dpy-cr ctx) 0.0 (- txhei))
+    (cairo_rectangle cr pad (- base-y txhei)
+                     (- width pad pad) (- height base-y txhei))
+    (cairo_fill cr)
+    |#
 
+    ;; write line
+    (cairo_move_to cr base-x base-y)
+    (cairo_show_text cr (get-text))
     (if #f #f)))
+
+(define (update-buffer ctx)
+  #f)
 
 ;; read xdg_surface description in xdg-shell.xml
 (define (create-it)
@@ -744,7 +777,7 @@ exec $GDB_PFX guile $0
         (srf-id (ctx-srf-id ctx))
         (drw-id (ctx-drw-id ctx))
         (dpy-id (ctx-dpy-id ctx)))
-    (draw-buffer drw-cr)
+    (draw-buffer ctx)
     (wl_surface:attach srf-id drw-id 0 0)
     (wl_surface:commit srf-id)
     ;; buffer swap
