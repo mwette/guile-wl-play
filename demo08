@@ -23,7 +23,7 @@ if [ $# -gt 0 ]; then
     esac
 fi
 
-exec $GDB_PFX guile $0
+exec $GDB_PFX guile $0 "$@"
 |#
 !#
 ;; Copyright (C) 2022-2023 Matthew Wette
@@ -326,11 +326,9 @@ exec $GDB_PFX guile $0
 (define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
-  (sferr "wl_buffer:relase ~s\n" obj-id)
+  (sferr "wl_buffer:release ~s\n" obj-id)
   (wl_buffer:destroy obj-id)
-  ;;(object-set! obj-id #f #f)
-  (vector-set! object-value-vec obj-id #f)
-  )
+  (vector-set! object-value-vec obj-id #f))
 
 ;; --- wl_data_offer
 
@@ -348,7 +346,7 @@ exec $GDB_PFX guile $0
 
 (define-wl-request wl_surface destroy)
 (define-wl-request wl_surface attach buffer x y)
-(define-wl-request wl_surface damage x y width height)
+;;(define-wl-request wl_surface damage x y width height) deprecated
 (define-wl-request wl_surface frame callback)
 (define-wl-request wl_surface set_opaque_region region)
 (define-wl-request wl_surface set_input_region region)
@@ -648,11 +646,12 @@ exec $GDB_PFX guile $0
      (sync-and-wait)
      (init-globals)
      (sync-and-wait)
+
      (spawn-fiber monitor)
-     (sferr "telnet localhost 37146\n")
+     (sferr "\n    telnet localhost 37146\n\n")
      ;;
      (create-it)
-     (if (getenv "WL_WAIT")
+     (if (> (length (program-arguments)) 1)
          (wait done-cond)
          (fsleep 4.0))
      (force-output (current-error-port))
@@ -730,12 +729,17 @@ exec $GDB_PFX guile $0
                         dpy-ix drw-ix dpy-cr drw-cr
                         ft-asc ft-dsc ft-hei ft-wid)))
     (init-cr-txt drw-cr)
-    (bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
+    ;;
+    (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
+    (cairo_paint dpy-cr)
+    (cairo_set_source_rgb drw-cr 0.9 0.9 0.9)
+    (cairo_paint drw-cr)
+    ;;
+    ;;(bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
     (set-object! smp-id 'wl_shm_pool ctx)
     (set-object! srf-id 'wl_surface ctx)
     (set-object! xrf-id 'xdg_surface ctx)
     (set-object! top-id 'xdg_toplevel ctx)
-    (draw-buffer ctx)
     (ctx-changed! ctx)
     ctx))
 
@@ -753,12 +757,17 @@ exec $GDB_PFX guile $0
           (set! ix (1+ ix)))
       (vector-ref text (1- ix)))))
 
-(define text0 (get-text))
-(define text1 (get-text))
 (define appl-ctx #f)
 
 (define lbr-bw 2.0)                   ; left/bottom/right border width
 (define tx-pad 4.0)
+
+(define (doit)
+  (let ((ctx appl-ctx))
+    (ctx-changed! ctx)
+    (wl_surface:damage_buffer (ctx-srf-id ctx) 0 0 500 300)
+    (xrf-config ctx)
+    #f))
   
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
@@ -766,7 +775,8 @@ exec $GDB_PFX guile $0
          (base-x (+ lbr-bw tx-pad))
          (base-y (- 300.0 lbr-bw tx-pad (ctx-ft-dsc ctx)))
          (txhei (ctx-ft-hei ctx))
-         (text text0))
+         (text (get-text))
+         )
     ;; draw border
     (cairo_save cr)
     (cairo_set_source_rgb cr 0.5 0.5 0.5)
@@ -781,42 +791,20 @@ exec $GDB_PFX guile $0
     (cairo_line_to cr 500.0 10.0)
     (cairo_stroke cr)
     (cairo_restore cr)
-    #|
-    |#
+    
+    (when #t
+      (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))
+        (cairo_save cr)
+        (cairo_set_source_surface cr dpy-srf 2.0 (- txhei))
+        (cairo_rectangle cr 2.0 (- base-y txhei)
+                         (- 300.0 4.0) (- 300.0 base-y txhei))
+        (cairo_fill cr)
+        (cairo_restore cr)))
     
     ;; write text
     (cairo_set_source_rgb cr 0.0 0.0 0.0)
     (cairo_move_to cr base-x base-y)
     (cairo_show_text cr text)
-    (if #f #f)))
-
-(define (next-line ctx)
-  (let* ((width (ctx-width ctx))
-         (height (ctx-height ctx))
-         (cr (ctx-drw-cr ctx))
-         (pad 4.0)
-         (base-x pad)
-         (base-y (- 300.0 pad (ctx-ft-dsc ctx)))
-         (txhei (ctx-ft-hei ctx))
-         (pat (let ((pat (cairo_get_source cr)))
-                (cairo_pattern_reference pat)
-                pat))
-         (text text1))
-    ;; scroll up
-    #|
-    ;; cairo_surface_reference: Assertion `CAIRO_REFERENCE_COUNT_HAS_REFERENCE
-    ;;   (&surface->ref_count)' failed.
-    (cairo_set_source_surface cr (ctx-dpy-cr ctx) 0.0 (- txhei))
-    (cairo_rectangle cr pad (- base-y txhei)
-                     (- width pad pad) (- height base-y txhei))
-    (cairo_fill cr)
-    |#
-
-    ;; write line
-    (cairo_set_source_rgb cr 0.0 0.0 0.0)
-    (cairo_move_to cr base-x base-y)
-    (cairo_show_text cr text)
-    (ctx-changed! ctx)
     (if #f #f)))
 
 ;; read xdg_surface description in xdg-shell.xml
