@@ -201,7 +201,7 @@ exec $GDB_PFX guile $0
   (%make-ctx changed
              port width height format
              smp-id srf-id xrf-id top-id
-             dpy-id drw-id dpy-cr drw-cr
+             dpy-ix drw-ix dpy-cr drw-cr
              ft-asc ft-dsc ft-hei ft-wid)
   ctx?
   (changed ctx-changed? set-ctx-changed!)
@@ -215,11 +215,13 @@ exec $GDB_PFX guile $0
   (srf-id ctx-srf-id set-ctx-srf-id!)
   (xrf-id ctx-xrf-id set-ctx-xrf-id!)
   (top-id ctx-top-id set-ctx-top-id!)
-  (dpy-id ctx-dpy-id set-ctx-dpy-id!)
-  (drw-id ctx-drw-id set-ctx-drw-id!)
+  ;;
+  (dpy-ix ctx-dpy-ix set-ctx-dpy-ix!)
+  (drw-ix ctx-drw-ix set-ctx-drw-ix!)
   ;;
   (dpy-cr ctx-dpy-cr set-ctx-dpy-cr!)
   (drw-cr ctx-drw-cr set-ctx-drw-cr!)
+  ;;
   (ft-asc ctx-ft-asc)
   (ft-dsc ctx-ft-dsc)
   (ft-hei ctx-ft-hei)
@@ -324,7 +326,7 @@ exec $GDB_PFX guile $0
 (define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
-  ;;(sferr "wl_buffer:relase ~s\n" obj-id)
+  (sferr "wl_buffer:relase ~s\n" obj-id)
   (wl_buffer:destroy obj-id)
   ;;(object-set! obj-id #f #f)
   (vector-set! object-value-vec obj-id #f)
@@ -647,10 +649,12 @@ exec $GDB_PFX guile $0
      (init-globals)
      (sync-and-wait)
      (spawn-fiber monitor)
+     (sferr "telnet localhost 37146\n")
      ;;
      (create-it)
-     ;;(wait done-cond)
-     (fsleep 4.0)
+     (if (getenv "WL_WAIT")
+         (wait done-cond)
+         (fsleep 4.0))
      (force-output (current-error-port))
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))
@@ -692,7 +696,7 @@ exec $GDB_PFX guile $0
     (cairo_font_extents cr (pointer-to extents))
     extents))
 
-(define (app-init width height format)
+(define (appl-init width height format)
   (let* ((format (if (symbol? format) (assq-ref wl_shm:format-enum format)))
          (stride (* width 4))
          (size (* stride height))
@@ -704,18 +708,14 @@ exec $GDB_PFX guile $0
          (srf-id (gen-id-using (wl_compositor:create_surface comp-id <>)))
          (xrf-id (gen-id-using (xdg_wm_base:get_xdg_surface base-id <> srf-id)))
          (top-id (gen-id-using (xdg_surface:get_toplevel xrf-id <>)))
-         (dpy-id (gen-id-using
-                  (wl_shm_pool:create_buffer
-                   smp-id <> 0 width height stride format)))
-         (drw-id (gen-id-using
-                  (wl_shm_pool:create_buffer
-                   smp-id <> size width height stride format)))
-         (dpy-cr (let* ((buffer (bytevector->pointer bv 0))
+         (dpy-ix 0)
+         (drw-ix size)
+         (dpy-cr (let* ((buffer (bytevector->pointer bv dpy-ix))
                         (format (wl-format->cairo format))
                         (srf (cairo_image_surface_create_for_data
                               buffer format width height stride)))
                    (cairo_create srf)))
-         (drw-cr (let* ((buffer (bytevector->pointer bv size))
+         (drw-cr (let* ((buffer (bytevector->pointer bv drw-ix))
                         (format (wl-format->cairo format))
                         (srf (cairo_image_surface_create_for_data
                               buffer format width height stride)))
@@ -727,7 +727,7 @@ exec $GDB_PFX guile $0
          (ft-wid (fh-object-ref extents 'max_x_advance))
          (ctx (make-ctx port width height format
                         smp-id srf-id xrf-id top-id
-                        dpy-id drw-id dpy-cr drw-cr
+                        dpy-ix drw-ix dpy-cr drw-cr
                         ft-asc ft-dsc ft-hei ft-wid)))
     (init-cr-txt drw-cr)
     (bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
@@ -735,8 +735,6 @@ exec $GDB_PFX guile $0
     (set-object! srf-id 'wl_surface ctx)
     (set-object! xrf-id 'xdg_surface ctx)
     (set-object! top-id 'xdg_toplevel ctx)
-    (set-object! dpy-id 'wl_buffer ctx)
-    (set-object! drw-id 'wl_buffer ctx)
     (draw-buffer ctx)
     (ctx-changed! ctx)
     ctx))
@@ -757,6 +755,7 @@ exec $GDB_PFX guile $0
 
 (define text0 (get-text))
 (define text1 (get-text))
+(define appl-ctx #f)
   
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
@@ -772,7 +771,7 @@ exec $GDB_PFX guile $0
     (cairo_show_text cr text)
     (if #f #f)))
 
-(define (add-line ctx)
+(define (next-line ctx)
   (let* ((width (ctx-width ctx))
          (height (ctx-height ctx))
          (cr (ctx-drw-cr ctx))
@@ -798,14 +797,16 @@ exec $GDB_PFX guile $0
     (cairo_set_source_rgb cr 0.0 0.0 0.0)
     (cairo_move_to cr base-x base-y)
     (cairo_show_text cr text)
+    (ctx-changed! ctx)
     (if #f #f)))
 
 ;; read xdg_surface description in xdg-shell.xml
 (define (create-it)
   (let* ((width 500) (height 300) (format 'xrgb8888)
-         (ctx (app-init width height format))
+         (ctx (appl-init width height format))
          (top-id (ctx-top-id ctx))
          (srf-id (ctx-srf-id ctx)))
+    (set! appl-ctx ctx)
     (set! io-debug #f)
     (xdg_toplevel:set_title top-id "wl-play")
     (xdg_toplevel:set_max_size top-id width height)
@@ -819,17 +820,26 @@ exec $GDB_PFX guile $0
   (sferr "xrf-config\n")
   (let ((srf-id (ctx-srf-id ctx)))
     (if (ctx-changed? ctx)
-        (let ((dpy-cr (ctx-dpy-cr ctx))
-              (dpy-id (ctx-dpy-id ctx))
-              (drw-cr (ctx-drw-cr ctx))
-              (drw-id (ctx-drw-id ctx)))
+        (let* ((smp-id (ctx-smp-id ctx))
+               (drw-ix (ctx-drw-ix ctx))
+               (drw-id (let* ((width (ctx-width ctx))
+                              (height (ctx-height ctx))
+                              (stride (* 4 width))
+                              (format (ctx-format ctx)))
+                         (gen-id-using
+                          (wl_shm_pool:create_buffer
+                           smp-id <> drw-ix width height stride format))))
+               (dpy-ix (ctx-dpy-ix ctx))
+               (dpy-cr (ctx-dpy-cr ctx))
+               (drw-cr (ctx-drw-cr ctx)))
+          (set-object! drw-id 'wl_buffer ctx)
           (draw-buffer ctx)
           (wl_surface:attach srf-id drw-id 0 0)
           ;; buffer swap
           (set-ctx-drw-cr! ctx dpy-cr)
           (set-ctx-dpy-cr! ctx drw-cr)
-          (set-ctx-drw-id! ctx dpy-id)
-          (set-ctx-dpy-id! ctx drw-id)
+          (set-ctx-drw-ix! ctx dpy-ix)
+          (set-ctx-dpy-ix! ctx drw-ix)
           (ctx-committed! ctx)))
     (wl_surface:commit srf-id)))
 
