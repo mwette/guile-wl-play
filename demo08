@@ -726,7 +726,6 @@ exec $GDB_PFX guile $0
          (face "monospace")
          (slant 'CAIRO_FONT_SLANT_NORMAL)
          (weight 'CAIRO_FONT_WEIGHT_NORMAL)
-         (text "Hello, world!")
          ;;(x (sferr "1\n"))
          (extents (let ((extents (make-cairo_font_extents_t)))
                     (cairo_select_font_face cr face slant weight)
@@ -740,9 +739,13 @@ exec $GDB_PFX guile $0
          ;;(x (sferr "3\n"))
          (txhei (fh-object-ref extents 'height))
          ;;(x (sferr "4\n"))
+         (text (get-text))
          )
+    (sferr "text: ~S\n" text)
     ;; scroll up
     #|
+    ;; cairo_surface_reference: Assertion `CAIRO_REFERENCE_COUNT_HAS_REFERENCE
+    ;;   (&surface->ref_count)' failed.
     (cairo_set_source_surface cr (ctx-dpy-cr ctx) 0.0 (- txhei))
     (cairo_rectangle cr pad (- base-y txhei)
                      (- width pad pad) (- height base-y txhei))
@@ -750,8 +753,9 @@ exec $GDB_PFX guile $0
     |#
 
     ;; write line
+    (cairo_set_source_rgb cr 0.0 0.0 0.0)
     (cairo_move_to cr base-x base-y)
-    (cairo_show_text cr (get-text))
+    (cairo_show_text cr text)
     (if #f #f)))
 
 (define (update-buffer ctx)
