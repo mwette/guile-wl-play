@@ -196,6 +196,32 @@ exec $GDB_PFX guile $0
 
 ;; ====================================
 
+(define-record-type <ctx>
+  (make-ctx port width height format
+            smp-id srf-id xrf-id top-id
+            dpy-id drw-id dpy-cr drw-cr
+            ft-asc ft-dsc ft-hei ft-wid)
+  ctx?
+  (port ctx-port set-ctx-port!)
+  (width ctx-width set-ctx-width!)
+  (height ctx-height set-ctx-height!)
+  (format ctx-format set-ctx-format!)
+  (smp-id ctx-smp-id set-ctx-smp-id!)
+  (srf-id ctx-srf-id set-ctx-srf-id!)
+  (xrf-id ctx-xrf-id set-ctx-xrf-id!)
+  (top-id ctx-top-id set-ctx-top-id!)
+  (dpy-id ctx-dpy-id set-ctx-dpy-id!)
+  (drw-id ctx-drw-id set-ctx-drw-id!)
+  (dpy-cr ctx-dpy-cr set-ctx-dpy-cr!)
+  (drw-cr ctx-drw-cr set-ctx-drw-cr!)
+  (ft-asc ctx-ft-asc)
+  (ft-dsc ctx-ft-dsc)
+  (ft-hei ctx-ft-hei)
+  (ft-wid ctx-ft-wid)
+  )
+
+;; ====================================
+
 (define rq-chan #f)                     ; channel for issuing requests
 (define rq-iobuf #f)
 (define ev-iobuf #f)
@@ -409,12 +435,12 @@ exec $GDB_PFX guile $0
 (define-wl-request xdg_surface ack_configure serial)
             
 (define (handle-xdg_surface:configure obj-id serial)
-  ;;(sferr "xdg_surface:configure ~S ~S ...\n" obj-id serial)
-  (xdg_surface:ack_configure obj-id serial)
+  (xdg_surface:ack_configure obj-id serial) ; before or after?
   (let ((obj (vector-ref object-value-vec obj-id)))
-    (when (procedure? obj)
-      ;;(sferr "  ... calling xdg_surface handler\n")
-      (obj obj-id))))
+    (cond
+     ((ctx? obj) (xrf-config obj))
+     ((procedure? obj) (obj obj-id))
+     (else #f))))
 
 ;; --- xdg_toplevel
 
@@ -642,24 +668,15 @@ exec $GDB_PFX guile $0
 
 (define gran #x100000)                  ; bufsize granularity
 
-(define-record-type <ctx>
-  (make-ctx port width height format
-            smp-id srf-id xrf-id top-id
-            dpy-id drw-id dpy-cr drw-cr)
-  ctx?
-  (port ctx-port set-ctx-port!)
-  (width ctx-width set-ctx-width!)
-  (height ctx-height set-ctx-height!)
-  (format ctx-format set-ctx-format!)
-  (smp-id ctx-smp-id set-ctx-smp-id!)
-  (srf-id ctx-srf-id set-ctx-srf-id!)
-  (xrf-id ctx-xrf-id set-ctx-xrf-id!)
-  (top-id ctx-top-id set-ctx-top-id!)
-  (dpy-id ctx-dpy-id set-ctx-dpy-id!)
-  (drw-id ctx-drw-id set-ctx-drw-id!)
-  (dpy-cr ctx-dpy-cr set-ctx-dpy-cr!)
-  (drw-cr ctx-drw-cr set-ctx-drw-cr!))
-
+(define (init-cr-txt cr)
+  (let ((face "monospace")
+        (slant 'CAIRO_FONT_SLANT_NORMAL)
+        (weight 'CAIRO_FONT_WEIGHT_NORMAL)
+        (extents (make-cairo_font_extents_t)))
+    (cairo_select_font_face cr face slant weight)
+    (cairo_set_font_size cr 16.0)
+    (cairo_font_extents cr (pointer-to extents))
+    extents))
 
 (define (app-init width height format)
   (let* ((format (if (symbol? format) (assq-ref wl_shm:format-enum format)))
@@ -689,14 +706,20 @@ exec $GDB_PFX guile $0
                         (srf (cairo_image_surface_create_for_data
                               buffer format width height stride)))
                    (cairo_create srf)))
+         (extents (init-cr-txt dpy-cr))
+         (ft-asc (fh-object-ref extents 'ascent))
+         (ft-dsc (fh-object-ref extents 'descent))
+         (ft-hei (fh-object-ref extents 'height))
+         (ft-wid (fh-object-ref extents 'max_x_advance))
          (ctx (make-ctx port width height format
                         smp-id srf-id xrf-id top-id
-                        dpy-id drw-id dpy-cr drw-cr)))
-    (bytevector-fill! bv #xee)  ;; <= KLUDGE
+                        dpy-id drw-id dpy-cr drw-cr
+                        ft-asc ft-dsc ft-hei ft-wid)))
+    (init-cr-txt drw-cr)
+    (bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
     (set-object! smp-id 'wl_shm_pool ctx)
     (set-object! srf-id 'wl_surface ctx)
-    ;;(set-object! xrf-id 'xdg_surface ctx) FIXME
-    (set-object! xrf-id 'xdg_surface (lambda (obj-id) (show-it ctx)))
+    (set-object! xrf-id 'xdg_surface ctx)
     (set-object! top-id 'xdg_toplevel ctx)
     (set-object! dpy-id 'wl_buffer ctx)
     (set-object! drw-id 'wl_buffer ctx)
@@ -718,28 +741,56 @@ exec $GDB_PFX guile $0
           (set! ix 1)
           (set! ix (1+ ix)))
       (vector-ref text (1- ix)))))
+
+(define text0 (get-text))
   
 (define (draw-buffer ctx)
+  (let* ((width (ctx-width ctx))
+         (height (ctx-height ctx))
+         (cr (ctx-drw-cr ctx))
+         #|
+         (face "monospace")
+         (slant 'CAIRO_FONT_SLANT_NORMAL)
+         (weight 'CAIRO_FONT_WEIGHT_NORMAL)
+         (extents (let ((extents (make-cairo_font_extents_t)))
+                    (cairo_select_font_face cr face slant weight)
+                    (cairo_set_font_size cr 16.0)
+                    (cairo_font_extents cr (pointer-to extents))
+                    extents))
+         |#
+         (pad 4.0)
+         (base-x pad)
+         ;;(base-y (- 300.0 pad (fh-object-ref extents 'descent)))
+         ;;(txhei (fh-object-ref extents 'height))
+         (base-y (- 300.0 pad (ctx-ft-dsc ctx)))
+         (txhei (ctx-ft-hei ctx))
+         (text text0))
+    ;; write text
+    (cairo_set_source_rgb cr 0.0 0.0 0.0)
+    (cairo_move_to cr base-x base-y)
+    (cairo_show_text cr text)
+    (if #f #f)))
+
+(define (update-buffer ctx)
   (let* ((width (ctx-width ctx))
          (height (ctx-height ctx))
          (cr (ctx-drw-cr ctx))
          (face "monospace")
          (slant 'CAIRO_FONT_SLANT_NORMAL)
          (weight 'CAIRO_FONT_WEIGHT_NORMAL)
-         ;;(x (sferr "1\n"))
          (extents (let ((extents (make-cairo_font_extents_t)))
                     (cairo_select_font_face cr face slant weight)
                     (cairo_set_font_size cr 16.0)
                     (cairo_font_extents cr (pointer-to extents))
                     extents))
-         ;;(x (sferr "2\n"))
          (pad 4.0)
          (base-x pad)
          (base-y (- 300.0 pad (fh-object-ref extents 'descent)))
-         ;;(x (sferr "3\n"))
          (txhei (fh-object-ref extents 'height))
-         ;;(x (sferr "4\n"))
          (text (get-text))
+         (pat (let ((pat (cairo_get_source cr)))
+                (cairo_pattern_reference pat)
+                pat))
          )
     (sferr "text: ~S\n" text)
     ;; scroll up
@@ -758,9 +809,6 @@ exec $GDB_PFX guile $0
     (cairo_show_text cr text)
     (if #f #f)))
 
-(define (update-buffer ctx)
-  #f)
-
 ;; read xdg_surface description in xdg-shell.xml
 (define (create-it)
   (let* ((width 500) (height 300) (format 'xrgb8888)
@@ -775,7 +823,7 @@ exec $GDB_PFX guile $0
     (if #f #f)))
   
 ;; This gets called in response to xdg_surface:configure event.
-(define (show-it ctx)
+(define (xrf-config ctx)
   (let ((drw-cr (ctx-drw-cr ctx))
         (dpy-cr (ctx-dpy-cr ctx))
         (srf-id (ctx-srf-id ctx))
