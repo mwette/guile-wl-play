@@ -756,15 +756,34 @@ exec $GDB_PFX guile $0
 (define text0 (get-text))
 (define text1 (get-text))
 (define appl-ctx #f)
+
+(define lbr-bw 2.0)                   ; left/bottom/right border width
+(define tx-pad 4.0)
   
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
   (let* ((cr (ctx-drw-cr ctx))
-         (pad 4.0)
-         (base-x pad)
-         (base-y (- 300.0 pad (ctx-ft-dsc ctx)))
+         (base-x (+ lbr-bw tx-pad))
+         (base-y (- 300.0 lbr-bw tx-pad (ctx-ft-dsc ctx)))
          (txhei (ctx-ft-hei ctx))
          (text text0))
+    ;; draw border
+    (cairo_save cr)
+    (cairo_set_source_rgb cr 0.5 0.5 0.5)
+    (cairo_set_line_width cr 2.0)
+    (cairo_move_to cr 1.0 0.0)
+    (cairo_line_to cr 1.0 299.0)
+    (cairo_line_to cr 499.0 299.0)
+    (cairo_line_to cr 499.0 0.0)
+    (cairo_stroke cr)
+    (cairo_set_line_width cr 20.0)
+    (cairo_move_to cr 1.0 10.0)
+    (cairo_line_to cr 500.0 10.0)
+    (cairo_stroke cr)
+    (cairo_restore cr)
+    #|
+    |#
+    
     ;; write text
     (cairo_set_source_rgb cr 0.0 0.0 0.0)
     (cairo_move_to cr base-x base-y)
