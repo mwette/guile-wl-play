@@ -1,7 +1,7 @@
 #!/opt/local/bin/guile -s
 # -*- scheme -*-
 !#
-;; Copyright (C) 2022 Matthew Wette
+;; Copyright (C) 2022-2023 Matthew Wette
 ;;
 ;; This library is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU Lesser General Public
@@ -16,59 +16,55 @@
 ;; You should have received a copy of the GNU Lesser General Public License
 ;; along with this library; if not, see <http://www.gnu.org/licenses/>.
 
-#|
-int, uint: 32-bit signed or unsigned integer.
+;; TODO
+;; 1) deal with fixed type
+;; 2) add enums
 
-fixed: 24.8 bit signed fixed-point numbers.
+;; types
+;; @table @asis
+;; @item int, uint
+;; 32-bit signed or unsigned integer
+;; @item fixed
+;; 24.8 bit signed fixed-point numbers
+;; @item object
+;; 32-bit object ID
+;; @item new_id
+;; 32-bit object ID which allocates that object when received
+;; @item new_id
+;; string, uint, uint for interface, version, and new id, when 
+;; interface is not specified
+;; @item string
+;; string, prefixed with a 32-bit integer specifying its length (in
+;; bytes, including null terminator), followed by the string contents
+;; and a NUL terminator, padded to 32 bits with undefined data. The 
+;; encoding is not specified, but in practice UTF-8 is used. 
+;; @item array
+;; A blob of arbitrary data, prefixed with a 32-bit integer specifying
+;; its length (in bytes), then the verbatim contents of the array,
+;;   padded to 32 bits with undefined data.
+;; @item fd
+;; 0-byte value on the primary transport, but transfers a file 
+;; descriptor to the other end using the ancillary data in the Unix
+;; domain socket message (msg_control).
+;; @item enum
+;; A single value (or bitmap) from an enumeration of known constants,
+;; encoded into a 32-bit integer.
+;; @end table
+;;
+;; Every message starts with header
+;; @itemize
+;; @item object-id : 32 bit
+;; @item msg-size : 16 bit (including header)
+;; @item opcode : 16 bit
+;; @end itemize
 
-object: 32-bit object ID.
+;; object-id 0 is the null object
+;; object-id 1 is reserved as wayland display singleton
+;; client ids are in range: 1-0xFeFFFFFF; server: 0xFF000000-0xFFFFFFFF
 
-new_id: 32-bit object ID which allocates that object when received.
-    OR string, uint, uint (interface, version, new id)
+;; debug w/ socat:
+;; $ socat UNIX-CONNECT:$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY UNIX-LISTEN:wlsock
 
-In addition to these primitives, the following other types are used:
-
-string: A string, prefixed with a 32-bit integer specifying its length
-    (in bytes, including null terminator), followed by the string contents
-    and a NUL terminator, padded to 32 bits with undefined data. The 
-    encoding is not specified, but in practice UTF-8 is used. 
-
-array: A blob of arbitrary data, prefixed with a 32-bit integer specifying
-    its length (in bytes), then the verbatim contents of the array, padded
-    to 32 bits with undefined data.
-
-fd: 0-bit value on the primary transport, but transfers a file descriptor
-     to the other end using the ancillary data in the Unix domain socket
-     message (msg_control).
-
-enum: A single value (or bitmap) from an enumeration of known constants,
-    encoded into a 32-bit integer.
-
-
-=============
-
-every message starts with header
-
-object-id : 32 bit
-msg-size : 16 bit (including header)
-opcode : 16 bit
-
-
-object-id 0 is the null object
-object-id 1 is reserved as wayland display singleton
-
-client ids are in range: 1-0xFeFFFFFF; server: 0xFF000000-0xFFFFFFFF
-
-|#
-
-#|
-debug w/ socat
-  guile xxx (create /tmp/mysocketdn
-$ socat UNIX-CONNECT:$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY UNIX-LISTEN:wlsock
-run program to wlsock
-|#
-
-;;(use-modules (nyacc lang sx-util))
 (use-modules (sxml simple))
 (use-modules (sxml fold))
 (use-modules ((sxml xpath) #:select (sxpath)))
@@ -82,17 +78,37 @@ run program to wlsock
 (define (sf fmt . args) (apply simple-format #t fmt args))
 (define (sferr fmt . args) (apply simple-format (current-error-port) fmt args))
 
-;; TODO
-;; 1) deal with fixed type
+;; pretty-print to string, but without training newline
+(define* (pps exp #:key (per-line-prefix ""))
+  (let* ((port (open-output-string)))
+    (pretty-print exp port #:per-line-prefix per-line-prefix)
+    (let ((str (get-output-string port)))
+      (close-output-port port)
+      (substring str 0 (1- (string-length str))))))
 
-;;(define (get-if tree name) ;; name = "wl_display"
-;;  (protocol . interface (@ name "wl_display"))
+(define (make-ff port)
+  (let ((col 0) (is "                           "))
+    (lambda (in fmt . args)
+      (let* ((str (apply format #f fmt args))
+             (len (string-length str)))
+        (when (> (+ col len) 76)
+          (display "\n" port)
+          (set! col 0))
+        (when (and (positive? in) (zero? col))
+          (display (substring is 0 in) port)
+          (set! col (+ col in)))
+        (display str port)
+        (set! col (+ col len))
+        (when (char=? #\newline (string-ref str (1- (string-length str))))
+          (set! col 0))))))
 
 (define endness (native-endianness))
+
 (define msg-size-offset
   (cond
    ((equal? endness (endianness big)) 4)
    ((equal? endness (endianness little)) 6)))
+
 (define opcode-offset
   (cond
    ((equal? endness (endianness big)) 6)
@@ -163,17 +179,29 @@ run program to wlsock
            names types)
        (values obj-id ,@names))))
 
+(define (doc-it lambda-form docstr)
+  (match lambda-form
+    (`(lambda ,args . ,rest)
+     `(lambda ,args ,docstr . ,rest))
+    (`(lambda* ,args . ,rest)
+     `(lambda* ,args ,docstr . ,rest))))
+
 (define (process-iface/c sx ix ifl)
 
-  (define (fix-args strings) (reverse (map string->symbol strings)))
+  (define (fix-args strings)
+    (reverse (map string->symbol strings)))
 
-  (define (doc-it form type name desc)
-    (let ((docstr (string-append type " for " name)))
-      (match form
-        (`(lambda ,args . ,rest)
-         `(lambda ,args ,docstr . ,rest))
-        (`(lambda* ,args . ,rest)
-         `(lambda* ,args ,docstr . ,rest)))))
+  (define (parse-enum-fields ents)
+    (let loop ((terms '()) (ents ents))
+      (if (null? ents) (reverse terms)
+          (sxml-match (car ents)
+            ((description . ,_)
+             (loop terms (cdr ents)))
+            ((entry (@ (name ,name) (value ,value))
+                    (description ,text))
+             (loop (acons name value terms) (cdr ents)))
+            ((entry (@ (name ,name) (value ,value)))
+             (loop (acons name value terms) (cdr ents)))))))
 
   (define (process-ent sx rx ex seed)
     (sxml-match sx
@@ -184,7 +212,6 @@ run program to wlsock
        (let loop ((names '()) (types '()) (args args))
          (if (null? args)
              (let* ((proc (make-encoder rx (fix-args names) (fix-args types)))
-                    ;;(proc (doc-it proc "request encoder" name desc))
                     (entry `((name . ,name) (type . request)
                              (indx . ,rx) (proc . ,proc))))
                (values (1+ rx) ex (cons entry seed)))
@@ -201,7 +228,6 @@ run program to wlsock
        (let loop ((names '()) (types '()) (args args))
          (if (null? args)
              (let* ((proc (make-decoder ex (fix-args names) (fix-args types)))
-                    (proc (doc-it proc "event decoder" name desc))
                     (entry `((name . ,name) (type . event)
                              (indx . ,ex) (proc . ,proc))))
                (values rx (1+ ex) (cons entry seed)))
@@ -209,16 +235,10 @@ run program to wlsock
                ((arg (@ (name ,name) (type ,type)))
                 (loop (cons name names) (cons type types) (cdr args)))))))
 
-      ((enum . ,ents)
-       (values rx ex seed))
-
-      ((enum (@ (name ,name)) (description . ,_) . ,ents)
-       (sferr "catch 1\n")
-       (values rx ex seed))
-
       ((enum (@ (name ,name)) . ,ents)
-       (sferr "catch 2\n")
-       (values rx ex seed))
+       (let* ((terms (parse-enum-fields ents))
+              (entry `((name . ,name) (type . enum) (dict . ,terms))))
+         (values rx ex (cons entry seed))))
 
       (,_ (sf "process-ent MISSED:\n") (pp sx) (quit))))
 
@@ -229,23 +249,52 @@ run program to wlsock
        (lambda (mr me ents)
          (values (1+ ix) (cons (cons* name ix (reverse ents)) ifl)))))))
 
-(define get-these
-  '(
-    ("wl_display" . "get_registry")
-    ("wl_registry" . "bind")
-    ("wl_registry" . "global")
-    ("wl_keyboard" . "enter")
-    ("wl_shm" . "create_pool")
-    ))
-
-(define (lkup dict if el)
-  (assoc-ref (assoc-ref dict if) el))
-
 (define (for-each-pair proc ls)
   (pair-for-each
    (lambda (pair) (proc (car pair) (cdr pair)))
    ls))
    
+(define (map-each-pair proc ls)
+  (let loop ((ls ls))
+    (if (null? ls) '()
+        (cons (proc (car ls) (cdr ls)) (loop (cdr ls))))))
+   
+(define (make-for-each test wrap)
+  (lambda (proc ifl)
+    (if (null? ifl) '()
+        (let loop ((res '()) (curr #f) (next #f) (rest ifl))
+          (cond
+           ((not next)
+            (cond
+             ((null? rest) (loop res curr '() rest))
+             ((test (car rest)) (loop res curr (car rest) (cdr rest)))
+             (else (loop res curr next (cdr rest)))))
+           ((not curr) (loop res next #f rest))
+           ((pair? curr) (loop (cons (wrap curr next proc) res) next #f rest))
+           (else (reverse res)))))))
+
+(define for-each-request
+  (make-for-each
+   (lambda (v) (eqv? (assq-ref v 'type) 'request))
+   (lambda (curr next proc)
+     (let ((name (assq-ref curr 'name))
+           (indx (assq-ref curr 'indx)) (code (assq-ref curr 'proc)))
+       (proc name indx code next)))))
+
+(define for-each-event
+  (make-for-each (lambda (v) (eqv? (assq-ref v 'type) 'event))
+   (lambda (curr next proc)
+     (let ((name (assq-ref curr 'name))
+           (indx (assq-ref curr 'indx)) (code (assq-ref curr 'proc)))
+       (proc name indx code next)))))
+   
+(define for-each-enum
+  (make-for-each
+   (lambda (v) (eqv? (assq-ref v 'type) 'enum))
+   (lambda (curr next proc)
+     (let ((name (assq-ref curr 'name)) (dict (assq-ref curr 'dict)))
+       (proc name dict next)))))
+  
 (define (for-each-method proc ifl)
   (for-each-pair
    (lambda (meth next)
@@ -253,22 +302,7 @@ run program to wlsock
             (type (assq-ref meth 'type))
             (indx (assq-ref meth 'indx))
             (code (assq-ref meth 'proc)))
-       (proc name type indx code next)))
-   ifl))
-
-(define (map-each-pair proc ls)
-  (let loop ((ls ls))
-    (if (null? ls) '()
-        (cons (proc (car ls) (cdr ls)) (loop (cdr ls))))))
-   
-(define (map-each-method proc ifl)
-  (map-each-pair
-   (lambda (meth next)
-     (let* ((name (assq-ref meth 'name))
-            (type (assq-ref meth 'type))
-            (indx (assq-ref meth 'indx))
-            (code (assq-ref meth 'proc)))
-       (proc name type indx code next)))
+         (proc name type indx code next)))
    ifl))
 
 (define (fold-each-method proc seed ifl)
@@ -282,7 +316,7 @@ run program to wlsock
                (tail (cdr ifl)))
           (proc name type indx code tail (loop tail))))))
 
-;;;
+;; ============================================================================
 
 (use-modules (srfi srfi-37))
 
@@ -300,7 +334,21 @@ run program to wlsock
              '()))
 
 (define (ss fmt . args)
+  (apply simple-format #f fmt args))
+(define (sy fmt . args)
   (string->symbol (apply simple-format #f fmt args)))
+
+(define (iface-of-type ifl type)
+  (map
+   (lambda (iface)
+     (filter (lambda (e) (eq? type (assq-ref e 'type))) iface))
+   ifl))
+
+(define (eval-entry entry)
+  (let ((key (car entry)) (val (cdr entry)))
+    (if (string-prefix? "0x" val)
+        (cons key (ss "#x~A" (substring val 2)))
+        entry)))
 
 (define (main)
   (let* ((args (parse-args (program-arguments)))
@@ -309,79 +357,111 @@ run program to wlsock
          (nick (or (assq-ref (cdr args) 'nick) base))
          (sxml (call-with-input-file spec
                  (lambda (port) (xml->sxml port #:trim-whitespace? #t))))
-         (ifl ((sxpath '(protocol interface)) sxml))
-         (cil (call-with-values
-                  (lambda () (fold-values process-iface/c ifl 0 '()))
-                (lambda (ix cil) (reverse cil))))
+         (ifx ((sxpath '(protocol interface)) sxml))
+         (ifl (call-with-values
+                  (lambda () (fold-values process-iface/c ifx 0 '()))
+                (lambda (ix ifl) (reverse ifl))))
          (code (string-append base "-client.scm"))
          (port (open-output-file code))
          (sf (lambda (fmt . args) (apply simple-format port fmt args)))
-         (pp (lambda (exp) (pretty-print exp port)))
+         (pp (lambda* (exp #:key (per-line-prefix ""))
+               (pretty-print exp port #:per-line-prefix per-line-prefix)))
+         (ff (make-ff port))
          )
     ;;
-    (sf ";; ~A - from ~A\n\n" code spec)
-    ;;
-    (pp `(define-public ,(ss "~A-iface-list" nick)
-           (quote ,(map string->symbol (map car cil)))))
-    (newline port)
-    ;; opcode dict
-    (sf "(define-public ~A-opcode-dict-list\n" nick)
-    (sf "  '(")
+    (sf ";; ~A - from ~A\n\n" code (basename spec))
+    
+    (ff 0 "(define-public ~a-interface-list\n" nick)
+    (ff 2 "'(")
+    (pair-for-each
+     (lambda (p) (ff 4 "~a" (car p)) (if (pair? (cdr p)) (ff 4 " ")))
+     (map car ifl))
+    (ff 3 "))\n\n")
+    
+    ;; event opcode dict -- change to pp for each elt
+    (ff 0 "(define-public ~A-event-opcode-dict-list\n" nick)
+    (ff 2 "'(")
     (for-each-pair
      (lambda (iface next)
-       (sf "(")
-       (for-each-method
-        (lambda (name type indx code next)
-          (sf "(~A . ~A)" name indx)
-          (if (pair? next) (sf " ") (sf ")")))
+       (ff 4 ";; ~a\n" (car iface))
+       (ff 4 "(")
+       (for-each-event
+        (lambda (name indx code next)
+          (ff 5 "(~A . ~A)" name indx)
+          (if (pair? next) (ff 4 " ")))
         (cddr iface))
-       (if (pair? next) (sf "\n    ")  (sf "))\n")))
-     cil)
-    (sf "\n")
+       (if (pair? next) (ff 5 ")\n") (ff 5 ")))\n")))
+     ifl)
+    (ff 0 "\n")
+
     ;; decoders
-    (pp
-     `(define ,(ss "~A-decoder-vec-list" nick)
-        (list
-         ,@(map-each-pair
-            (lambda (iface next)
-              `(vector
-                ,@(fold-each-method
-                   (lambda (name type indx code next seed)
-                     (if (eq? type 'event) (cons code seed) seed))
-                   '() (cddr iface))))
-            cil))))
-    (newline port)
+    (ff 0 "(define ~A-decoder-vec-list\n" nick)
+    (ff 2 "(list\n")
+    (for-each-pair
+     (lambda (iface next)
+       (ff 3 "(vector")
+       (for-each-event
+        (lambda (name indx code next)
+          (let* ((doc (ss "event decoder for ~A:~A" (car iface) name))
+                 (code (doc-it code doc)))
+            (newline port)
+            (display (pps code #:per-line-prefix "    ") port)
+            ;;(if (pair? next) (ff 0 "\n"))
+            ))
+        (cddr iface))
+       (if (pair? next) (ff 4 ")\n") (ff 4 ")")))
+     ifl)
+    (ff 3 "))\n")
+    (ff 0 "\n")
     ;;
-    (pp
-     `(define ,(ss "~A-handler-vec-list" nick)
-        (list
-         ,@(map-each-pair
-            (lambda (iface next)
-              `(make-vector
-                ,(length
-                  (filter
-                   (lambda (x) (eq? 'event (assq-ref x 'type)))
-                   (cddr iface)))))
-            cil))))
-    (newline port)
-    ;;
-    (sf "(add-iface-list ~A-iface-list)\n" nick)
-    (sf "(add-opcode-dict-list ~A-opcode-dict-list)\n" nick)
+    (ff 0 "(define ~A-handler-vec-list\n" nick)
+    (ff 2 "(list ")
+    (for-each-pair
+     (lambda (iface next)
+       (ff 8 "(make-vector ~a)"
+           (length
+            (filter
+             (lambda (x) (eq? 'event (assq-ref x 'type)))
+             (cddr iface))))
+       (if (pair? next) (ff 8 " ")))
+     ifl)
+    (ff 3 "))\n")
+    (ff 0 "\n")
+    
+    ;; ;; clean this up
+    (sf "(add-iface-list ~A-interface-list)\n" nick)
+    (sf "(add-opcode-dict-list ~A-event-opcode-dict-list)\n" nick)
     (sf "(add-decoder-vec-list ~A-decoder-vec-list)\n" nick)
     (sf "(add-handler-vec-list ~A-handler-vec-list)\n" nick)
     (newline port)
+    
+    ;; enums dict's
+    (for-each-pair
+     (lambda (iface next)
+       (for-each-enum
+        (lambda (name dict next)
+          (ff 0 "(define-public ~A:~A-enum\n" (car iface) name)
+          (ff 2 "'(")
+          (for-each-pair
+           (lambda (curr next)
+             (ff 4 "~a" (eval-entry curr))
+             (if (pair? next) (ff 2 " ") (ff 2 "))\n")))
+           dict)
+          (newline port))
+        iface))
+     ifl)
     
     ;; encoders
     (for-each
      (lambda (iface)
        (let ((if-name (car iface)))
-         (for-each-method
-          (lambda (name type indx code next)
-            (if (eq? type 'request)
-                (let ((fn (ss "encode-~A:~A" if-name name)))
-                  (pp `(define-public ,fn ,code)) (newline port))))
+         (for-each-request
+          (lambda (name indx code next)
+            (let ((fn (sy "encode-~A:~A" if-name name)))
+              (pp `(define-public ,fn ,code))
+              (newline port)))
           (cddr iface))))
-     cil)
+     ifl)
     ;;
     (sf ";; --- last line ---\n")
     (if port (close-port port))

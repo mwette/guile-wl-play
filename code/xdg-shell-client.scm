@@ -1,79 +1,116 @@
-;; xdg-shell-client.scm - from ../../proto/xdg-shell.xml
+;; xdg-shell-client.scm - from xdg-shell.xml
 
-(define-public xdg-shell-iface-list
-  '(xdg_wm_base
-     xdg_positioner
-     xdg_surface
-     xdg_toplevel
-     xdg_popup))
+(define-public xdg-shell-interface-list
+  '(xdg_wm_base xdg_positioner xdg_surface xdg_toplevel xdg_popup))
 
-(define-public xdg-shell-opcode-dict-list
-  '(((destroy . 0) (create_positioner . 1) (get_xdg_surface . 2) (pong . 3) (ping . 0))
-    ((destroy . 0) (set_size . 1) (set_anchor_rect . 2) (set_anchor . 3) (set_gravity . 4) (set_constraint_adjustment . 5) (set_offset . 6) (set_reactive . 7) (set_parent_size . 8) (set_parent_configure . 9))
-    ((destroy . 0) (get_toplevel . 1) (get_popup . 2) (set_window_geometry . 3) (ack_configure . 4) (configure . 0))
-    ((destroy . 0) (set_parent . 1) (set_title . 2) (set_app_id . 3) (show_window_menu . 4) (move . 5) (resize . 6) (set_max_size . 7) (set_min_size . 8) (set_maximized . 9) (unset_maximized . 10) (set_fullscreen . 11) (unset_fullscreen . 12) (set_minimized . 13) (configure . 0) (close . 1) (configure_bounds . 2))
-    ((destroy . 0) (grab . 1) (configure . 0) (popup_done . 1) (reposition . 2) (repositioned . 2))))
+(define-public xdg-shell-event-opcode-dict-list
+  '(;; xdg_wm_base
+    ((ping . 0))
+    ;; xdg_positioner
+    ()
+    ;; xdg_surface
+    ((configure . 0))
+    ;; xdg_toplevel
+    ((configure . 0) (close . 1) (configure_bounds . 2))
+    ;; xdg_popup
+    ((configure . 0) (popup_done . 1) (repositioned . 2))))
 
 (define xdg-shell-decoder-vec-list
-  (list (vector
-          (lambda (obj-id bv ix cm)
-            "event decoder for ping"
-            (let*-values
-              (((serial ix) (dec-u32 bv ix)))
-              (values obj-id serial))))
-        (vector)
-        (vector
-          (lambda (obj-id bv ix cm)
-            "event decoder for configure"
-            (let*-values
-              (((serial ix) (dec-u32 bv ix)))
-              (values obj-id serial))))
-        (vector
-          (lambda (obj-id bv ix cm)
-            "event decoder for configure"
-            (let*-values
-              (((width ix) (dec-s32 bv ix))
-               ((height ix) (dec-s32 bv ix))
-               ((states ix) (dec-array bv ix)))
-              (values obj-id width height states)))
-          (lambda (obj-id bv ix cm)
-            "event decoder for close"
-            (let*-values () (values obj-id)))
-          (lambda (obj-id bv ix cm)
-            "event decoder for configure_bounds"
-            (let*-values
-              (((width ix) (dec-s32 bv ix))
-               ((height ix) (dec-s32 bv ix)))
-              (values obj-id width height))))
-        (vector
-          (lambda (obj-id bv ix cm)
-            "event decoder for configure"
-            (let*-values
-              (((x ix) (dec-s32 bv ix))
-               ((y ix) (dec-s32 bv ix))
-               ((width ix) (dec-s32 bv ix))
-               ((height ix) (dec-s32 bv ix)))
-              (values obj-id x y width height)))
-          (lambda (obj-id bv ix cm)
-            "event decoder for popup_done"
-            (let*-values () (values obj-id)))
-          (lambda (obj-id bv ix cm)
-            "event decoder for repositioned"
-            (let*-values
-              (((token ix) (dec-u32 bv ix)))
-              (values obj-id token))))))
+  (list
+   (vector
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_wm_base:ping"
+      (let*-values
+        (((serial ix) (dec-u32 bv ix)))
+        (values obj-id serial))))
+   (vector)
+   (vector
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_surface:configure"
+      (let*-values
+        (((serial ix) (dec-u32 bv ix)))
+        (values obj-id serial))))
+   (vector
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_toplevel:configure"
+      (let*-values
+        (((width ix) (dec-s32 bv ix))
+         ((height ix) (dec-s32 bv ix))
+         ((states ix) (dec-array bv ix)))
+        (values obj-id width height states)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_toplevel:close"
+      (let*-values () (values obj-id)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_toplevel:configure_bounds"
+      (let*-values
+        (((width ix) (dec-s32 bv ix))
+         ((height ix) (dec-s32 bv ix)))
+        (values obj-id width height))))
+   (vector
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_popup:configure"
+      (let*-values
+        (((x ix) (dec-s32 bv ix))
+         ((y ix) (dec-s32 bv ix))
+         ((width ix) (dec-s32 bv ix))
+         ((height ix) (dec-s32 bv ix)))
+        (values obj-id x y width height)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_popup:popup_done"
+      (let*-values () (values obj-id)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_popup:repositioned"
+      (let*-values
+        (((token ix) (dec-u32 bv ix)))
+        (values obj-id token))))))
 
 (define xdg-shell-handler-vec-list
-  (list (make-vector 1)
-        (make-vector 0)
-        (make-vector 1)
-        (make-vector 3)
+  (list (make-vector 1) (make-vector 0) (make-vector 1) (make-vector 3) 
         (make-vector 3)))
 
-(add-iface-list xdg-shell-iface-list)
-(add-opcode-dict-list xdg-shell-opcode-dict-list)
+(add-iface-list xdg-shell-interface-list)
+(add-opcode-dict-list xdg-shell-event-opcode-dict-list)
 (add-decoder-vec-list xdg-shell-decoder-vec-list)
 (add-handler-vec-list xdg-shell-handler-vec-list)
+
+(define-public xdg_wm_base:error-enum
+  '((role . 0) (defunct_surfaces . 1) (not_the_topmost_popup . 2) 
+    (invalid_popup_parent . 3) (invalid_surface_state . 4) 
+    (invalid_positioner . 5)))
+
+(define-public xdg_positioner:error-enum
+  '((invalid_input . 0)))
+
+(define-public xdg_positioner:anchor-enum
+  '((none . 0) (top . 1) (bottom . 2) (left . 3) (right . 4) (top_left . 5) 
+    (bottom_left . 6) (top_right . 7) (bottom_right . 8)))
+
+(define-public xdg_positioner:gravity-enum
+  '((none . 0) (top . 1) (bottom . 2) (left . 3) (right . 4) (top_left . 5) 
+    (bottom_left . 6) (top_right . 7) (bottom_right . 8)))
+
+(define-public xdg_positioner:constraint_adjustment-enum
+  '((none . 0) (slide_x . 1) (slide_y . 2) (flip_x . 4) (flip_y . 8) 
+    (resize_x . 16) (resize_y . 32)))
+
+(define-public xdg_surface:error-enum
+  '((not_constructed . 1) (already_constructed . 2) 
+    (unconfigured_buffer . 3)))
+
+(define-public xdg_toplevel:error-enum
+  '((invalid_resize_edge . 0)))
+
+(define-public xdg_toplevel:resize_edge-enum
+  '((none . 0) (top . 1) (bottom . 2) (left . 4) (top_left . 5) 
+    (bottom_left . 6) (right . 8) (top_right . 9) (bottom_right . 10)))
+
+(define-public xdg_toplevel:state-enum
+  '((maximized . 1) (fullscreen . 2) (resizing . 3) (activated . 4) 
+    (tiled_left . 5) (tiled_right . 6) (tiled_top . 7) (tiled_bottom . 8)))
+
+(define-public xdg_popup:error-enum
+  '((invalid_grab . 0)))
 
 (define-public encode-xdg_wm_base:destroy
   (lambda (obj-id bv ix)

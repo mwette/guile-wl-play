@@ -171,6 +171,7 @@
 
 (include-from-path "code/wayland-client.scm")
 (include-from-path "code/xdg-shell-client.scm")
+;;(include-from-path "code/xdg-decoration-unstable-v1-client.scm")
 ;;(include-from-path "code/linux-dmabuf-unstable-v1-client.scm")
 
 (define wl-index-dict #f)

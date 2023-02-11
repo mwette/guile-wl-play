@@ -18,4 +18,7 @@ scanner		wayland client protocol code generator
 code/*.scm	generated codes
 
 demo07		demo program
+demo08		adding more structure, scrolled update
 
+V0.10.0		first working release
+V0.11.0		updated scanner, generates enums, added demo08
