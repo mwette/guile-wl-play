@@ -196,22 +196,28 @@ exec $GDB_PFX guile $0
 
 ;; ====================================
 
+
 (define-record-type <ctx>
-  (make-ctx port width height format
-            smp-id srf-id xrf-id top-id
-            dpy-id drw-id dpy-cr drw-cr
-            ft-asc ft-dsc ft-hei ft-wid)
+  (%make-ctx changed
+             port width height format
+             smp-id srf-id xrf-id top-id
+             dpy-id drw-id dpy-cr drw-cr
+             ft-asc ft-dsc ft-hei ft-wid)
   ctx?
+  (changed ctx-changed? set-ctx-changed!)
+  ;;
   (port ctx-port set-ctx-port!)
   (width ctx-width set-ctx-width!)
   (height ctx-height set-ctx-height!)
   (format ctx-format set-ctx-format!)
+  ;;
   (smp-id ctx-smp-id set-ctx-smp-id!)
   (srf-id ctx-srf-id set-ctx-srf-id!)
   (xrf-id ctx-xrf-id set-ctx-xrf-id!)
   (top-id ctx-top-id set-ctx-top-id!)
   (dpy-id ctx-dpy-id set-ctx-dpy-id!)
   (drw-id ctx-drw-id set-ctx-drw-id!)
+  ;;
   (dpy-cr ctx-dpy-cr set-ctx-dpy-cr!)
   (drw-cr ctx-drw-cr set-ctx-drw-cr!)
   (ft-asc ctx-ft-asc)
@@ -219,6 +225,14 @@ exec $GDB_PFX guile $0
   (ft-hei ctx-ft-hei)
   (ft-wid ctx-ft-wid)
   )
+
+(define (make-ctx . args)
+  (apply %make-ctx #t args))
+
+(define (ctx-changed! ctx)
+  (set-ctx-changed! ctx #t))
+(define (ctx-committed! ctx)
+  (set-ctx-changed! ctx #f))
 
 ;; ====================================
 
@@ -723,10 +737,9 @@ exec $GDB_PFX guile $0
     (set-object! top-id 'xdg_toplevel ctx)
     (set-object! dpy-id 'wl_buffer ctx)
     (set-object! drw-id 'wl_buffer ctx)
+    (draw-buffer ctx)
+    (ctx-changed! ctx)
     ctx))
-
-(define (draw-buffer-frame cr)
-  #f)
 
 (define get-text
   (let ((ix 0)
@@ -743,25 +756,13 @@ exec $GDB_PFX guile $0
       (vector-ref text (1- ix)))))
 
 (define text0 (get-text))
+(define text1 (get-text))
   
 (define (draw-buffer ctx)
-  (let* ((width (ctx-width ctx))
-         (height (ctx-height ctx))
-         (cr (ctx-drw-cr ctx))
-         #|
-         (face "monospace")
-         (slant 'CAIRO_FONT_SLANT_NORMAL)
-         (weight 'CAIRO_FONT_WEIGHT_NORMAL)
-         (extents (let ((extents (make-cairo_font_extents_t)))
-                    (cairo_select_font_face cr face slant weight)
-                    (cairo_set_font_size cr 16.0)
-                    (cairo_font_extents cr (pointer-to extents))
-                    extents))
-         |#
+  (sferr "draw-buffer\n")
+  (let* ((cr (ctx-drw-cr ctx))
          (pad 4.0)
          (base-x pad)
-         ;;(base-y (- 300.0 pad (fh-object-ref extents 'descent)))
-         ;;(txhei (fh-object-ref extents 'height))
          (base-y (- 300.0 pad (ctx-ft-dsc ctx)))
          (txhei (ctx-ft-hei ctx))
          (text text0))
@@ -771,28 +772,18 @@ exec $GDB_PFX guile $0
     (cairo_show_text cr text)
     (if #f #f)))
 
-(define (update-buffer ctx)
+(define (add-line ctx)
   (let* ((width (ctx-width ctx))
          (height (ctx-height ctx))
          (cr (ctx-drw-cr ctx))
-         (face "monospace")
-         (slant 'CAIRO_FONT_SLANT_NORMAL)
-         (weight 'CAIRO_FONT_WEIGHT_NORMAL)
-         (extents (let ((extents (make-cairo_font_extents_t)))
-                    (cairo_select_font_face cr face slant weight)
-                    (cairo_set_font_size cr 16.0)
-                    (cairo_font_extents cr (pointer-to extents))
-                    extents))
          (pad 4.0)
          (base-x pad)
-         (base-y (- 300.0 pad (fh-object-ref extents 'descent)))
-         (txhei (fh-object-ref extents 'height))
-         (text (get-text))
+         (base-y (- 300.0 pad (ctx-ft-dsc ctx)))
+         (txhei (ctx-ft-hei ctx))
          (pat (let ((pat (cairo_get_source cr)))
                 (cairo_pattern_reference pat)
                 pat))
-         )
-    (sferr "text: ~S\n" text)
+         (text text1))
     ;; scroll up
     #|
     ;; cairo_surface_reference: Assertion `CAIRO_REFERENCE_COUNT_HAS_REFERENCE
@@ -819,25 +810,28 @@ exec $GDB_PFX guile $0
     (xdg_toplevel:set_title top-id "wl-play")
     (xdg_toplevel:set_max_size top-id width height)
     (xdg_toplevel:set_min_size top-id width height)
+    (sferr "commit1\n")
     (wl_surface:commit srf-id)
     (if #f #f)))
   
 ;; This gets called in response to xdg_surface:configure event.
 (define (xrf-config ctx)
-  (let ((drw-cr (ctx-drw-cr ctx))
-        (dpy-cr (ctx-dpy-cr ctx))
-        (srf-id (ctx-srf-id ctx))
-        (drw-id (ctx-drw-id ctx))
-        (dpy-id (ctx-dpy-id ctx)))
-    (draw-buffer ctx)
-    (wl_surface:attach srf-id drw-id 0 0)
-    (wl_surface:commit srf-id)
-    ;; buffer swap
-    (set-ctx-drw-cr! ctx dpy-cr)
-    (set-ctx-dpy-cr! ctx drw-cr)
-    (set-ctx-drw-id! ctx dpy-id)
-    (set-ctx-dpy-id! ctx drw-id)
-    (if #f #f)))
+  (sferr "xrf-config\n")
+  (let ((srf-id (ctx-srf-id ctx)))
+    (if (ctx-changed? ctx)
+        (let ((dpy-cr (ctx-dpy-cr ctx))
+              (dpy-id (ctx-dpy-id ctx))
+              (drw-cr (ctx-drw-cr ctx))
+              (drw-id (ctx-drw-id ctx)))
+          (draw-buffer ctx)
+          (wl_surface:attach srf-id drw-id 0 0)
+          ;; buffer swap
+          (set-ctx-drw-cr! ctx dpy-cr)
+          (set-ctx-dpy-cr! ctx drw-cr)
+          (set-ctx-drw-id! ctx dpy-id)
+          (set-ctx-dpy-id! ctx drw-id)
+          (ctx-committed! ctx)))
+    (wl_surface:commit srf-id)))
 
 (appl-main)
 
