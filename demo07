@@ -667,11 +667,6 @@ exec $GDB_PFX guile $0
          (text "Hello, world!"))
     (bytevector-fill! buffer #xee)
     
-    (cairo_move_to cro 0.0 0.0)
-    (cairo_move_to cro 20.0 20.0)
-    (cairo_line_to cro 120.0 120.0)
-    (cairo_stroke cro)
-
     (cairo_select_font_face
      cro "Sans" 'CAIRO_FONT_SLANT_NORMAL 'CAIRO_FONT_WEIGHT_NORMAL)
     (cairo_set_font_size cro 32.0)
@@ -679,6 +674,18 @@ exec $GDB_PFX guile $0
     (cairo_move_to cro 50.0 50.0)
     (cairo_show_text cro text)
 
+    (cairo_move_to cr 120.0 80.0)
+    (cairo_line_to cr 140.0 90.0)
+    (cairo_line_to cr 160.0 80.0)
+    (cairo_line_to cr 180.0 90.0)
+    (cairo_line_to cr 200.0 80.0)
+    (cairo_line_to cr 220.0 90.0)
+    (cairo_line_to cr 240.0 80.0)
+    (cairo_line_to cr 260.0 90.0)
+    (cairo_line_to cr 280.0 80.0)
+    (cairo_line_to cr 300.0 90.0)
+    (cairo_line_to cr 320.0 80.0)
+    (cairo_stroke cro)
     (if #f #f)))
 
 (define (draw-buffer-3)
