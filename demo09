@@ -327,7 +327,7 @@ exec $GDB_PFX guile $0 "$@"
 (define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
-  (sferr "wl_buffer:release ~s\n" obj-id)
+  ;;(sferr "wl_buffer:release ~s\n" obj-id)
   (wl_buffer:destroy obj-id)
   (vector-set! object-value-vec obj-id #f))
 
@@ -382,7 +382,58 @@ exec $GDB_PFX guile $0 "$@"
  
 ;; --- wl_pointer
 
+(define-wl-request wl_pointer set_cursor serial surface hotspot_x hotspot_y)
+(define-wl-request wl_pointer release)
+
+(define (handle-wl_pointer:enter obj-id serial surface surface_x surface_y)
+  (if #f #f))
+
+(define (handle-wl_pointer:leave obj-id serial surface)
+  (if #f #f))
+
+(define (handle-wl_pointer:motion obj-id time surface_x surface_y)
+  (if #f #f))
+
+(define (handle-wl_pointer:button obj-id serial time button state)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis obj-id time axis value)
+  (if #f #f))
+
+(define (handle-wl_pointer:frame obj-id)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_source obj-id axis_source)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_stop obj-id time axis)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_discrete obj-id axis discrete)
+  (if #f #f))
+
 ;; --- wl_keyboard
+
+(define-wl-request wl_keyboard release)
+
+(define (handle-wl_keyboard:keymap obj-id format fd size)
+  (if #f #f))
+
+(define (handle-wl_keyboard:enter obj-id serial surface keys)
+  (if #f #f))
+
+(define (handle-wl_keyboard:leave obj-id serial surface)
+  (if #f #f))
+
+(define (handle-wl_keyboard:key obj-id serial time key state)
+  (if #f #f))
+
+(define (handle-wl_keyboard:modifiers obj-id serial mods_depressed mods_latched
+                                       mods_locked group)
+  (if #f #f))
+
+(define (handle-wl_keyboard:repeat_info obj-id rate delay)
+  (if #f #f))
 
 ;; --- wl_touch
 
@@ -511,6 +562,21 @@ exec $GDB_PFX guile $0 "$@"
   (wl-event wl_surface leave)
   (wl-event wl_seat capabilities)
   (wl-event wl_seat name)
+  (wl-event wl_pointer enter)
+  (wl-event wl_pointer leave)
+  (wl-event wl_pointer motion)
+  (wl-event wl_pointer button)
+  (wl-event wl_pointer axis)
+  (wl-event wl_pointer frame)
+  (wl-event wl_pointer axis_source)
+  (wl-event wl_pointer axis_stop)
+  (wl-event wl_pointer axis_discrete)
+  (wl-event wl_keyboard keymap)
+  (wl-event wl_keyboard enter)
+  (wl-event wl_keyboard leave)
+  (wl-event wl_keyboard key)
+  (wl-event wl_keyboard modifiers)
+  (wl-event wl_keyboard repeat_info)
   (wl-event wl_output geometry)
   (wl-event wl_output mode)
   (wl-event wl_output done)
@@ -830,7 +896,7 @@ exec $GDB_PFX guile $0 "$@"
          (top-id (ctx-top-id ctx))
          (srf-id (ctx-srf-id ctx)))
     (set! appl-ctx ctx)
-    (set! io-debug #t)
+    (set! io-debug #f)
     (xdg_toplevel:set_title top-id "wl-play")
     (xdg_toplevel:set_max_size top-id width height)
     (xdg_toplevel:set_min_size top-id width height)
