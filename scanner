@@ -418,7 +418,7 @@
     (ff 2 "(list ")
     (for-each-pair
      (lambda (iface next)
-       (ff 8 "(make-vector ~a)"
+       (ff 8 "(make-vector ~a #f)"
            (length
             (filter
              (lambda (x) (eq? 'event (assq-ref x 'type)))

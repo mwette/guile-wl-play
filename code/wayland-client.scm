@@ -430,12 +430,14 @@
    (vector)))
 
 (define wayland-handler-vec-list
-  (list (make-vector 2) (make-vector 2) (make-vector 1) (make-vector 0) 
-        (make-vector 0) (make-vector 1) (make-vector 1) (make-vector 3) 
-        (make-vector 6) (make-vector 6) (make-vector 0) (make-vector 0) 
-        (make-vector 3) (make-vector 2) (make-vector 2) (make-vector 9) 
-        (make-vector 6) (make-vector 7) (make-vector 6) (make-vector 0) 
-        (make-vector 0) (make-vector 0)))
+  (list (make-vector 2 #f) (make-vector 2 #f) (make-vector 1 #f) 
+        (make-vector 0 #f) (make-vector 0 #f) (make-vector 1 #f) 
+        (make-vector 1 #f) (make-vector 3 #f) (make-vector 6 #f) 
+        (make-vector 6 #f) (make-vector 0 #f) (make-vector 0 #f) 
+        (make-vector 3 #f) (make-vector 2 #f) (make-vector 2 #f) 
+        (make-vector 9 #f) (make-vector 6 #f) (make-vector 7 #f) 
+        (make-vector 6 #f) (make-vector 0 #f) (make-vector 0 #f) 
+        (make-vector 0 #f)))
 
 (add-iface-list wayland-interface-list)
 (add-opcode-dict-list wayland-event-opcode-dict-list)
