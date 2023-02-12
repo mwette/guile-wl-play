@@ -16,6 +16,9 @@ GUILE_LOAD_PATH=$NYACC_DIR/examples:$NYACC_DIR/module
 GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
 export GUILE_LOAD_PATH
 
+# Fibers uses some deprecated bit ops:
+export GUILE_WARN_DEPRECATED=no
+
 GDB_PFX=""
 if [ $# -gt 0 ]; then
     case "$1" in
@@ -297,7 +300,7 @@ exec $GDB_PFX guile $0 "$@"
   (let ((val (vector-ref object-value-vec obj-id)))
     (if (condition? val) (signal-condition! val))
     (vector-set! object-value-vec obj-id #f))
-  (sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data)
+  ;;(sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data)
   (if #f #f))
 
 ;; --- wl_compositor
@@ -373,7 +376,10 @@ exec $GDB_PFX guile $0 "$@"
 (define-wl-request wl_seat release)
 
 (define (handle-wl_seat:capabilities obj-id capabilities)
-  ;;(sferr "wl_seat:capabilities ~S\n" capabilities)
+  (define (cap? caps key)
+    (positive? (logior caps (assq-ref wl_seat:capability-enum key))))
+  (if (not (cap? capabilities 'keyboard)) (sferr "warning: no keyboard"))
+  (if (not (cap? capabilities 'pointer)) (sferr "warning: no pointer"))
   (if #f #f))
  
 (define (handle-wl_seat:name obj-id name)
