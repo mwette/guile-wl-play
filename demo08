@@ -1,11 +1,11 @@
 #!/bin/bash
 # -*- scheme -*-
 #|
-# wl07 - wayland client in fibers
+# demo08 - wayland client in fibers
 # usage:
-#   $ ./wl07 &
+#   $ ./demo08 1
 #   $ telnet localhost 37146
-#   scheme@(guile-user)> (tryit)
+#   scheme@(guile-user)> (doit)
 #   scheme@(guile-user)> (done)
 
 LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
