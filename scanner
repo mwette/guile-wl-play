@@ -174,7 +174,7 @@
                ((fixed) `((,n ix) (dec-fixed bv ix)))
                ((string) `((,n ix) (dec-string bv ix)))
                ((array) `((,n ix) (dec-array bv ix)))
-               ((fd) `((,n ix) (dec-fd cm)))
+               ((fd) `((,n) (dec-fd cm)))
                (else (sf "type=~S\n" t) (error "bad type"))))
            names types)
        (values obj-id ,@names))))
