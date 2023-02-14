@@ -48,6 +48,14 @@ exec $GDB_PFX guile $0
       (lambda () (encode-wl_shm:create_pool 3 io-buf 0 10 fd size))
     (lambda (size cm)
       (sendmsg sock io-buf 0 size cm)))
+  (sleep 1)
+  (let* ((res (recvmsg! sock io-buf 0))
+         (cm (vector-ref res 1)))
+    (sferr "cm: ~S\n" (fmtbv/x cm 0 (bytevector-length cm) 4))
+    (sferr "fd: ~S\n" (dec-fd cm))
+    (sferr "SOL_SOCKET=~S SCM_RIGHTS=~S\n" SOL_SOCKET SCM_RIGHTS)
+    #t)
+
   (sleep 100)
   #f)
 
