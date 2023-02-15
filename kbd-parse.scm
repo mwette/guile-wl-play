@@ -37,50 +37,43 @@ exec guile $0 "$@"
 
 (define rls reverse-list->string)
 
-(define (kbd-read str)
-  (with-input-from-string str
-    (lambda ()
-      (let loop ((rz '()) (cl '()) (st 0) (ch (read-char)))
-        ;;(if sf-port (sf "ch = ~S\n" ch))
-        (case st
-          ((0)
-           (cond ;; [init]
-            ((eof-object? ch) (reverse rz))
-            ((char-whitespace? ch) (loop rz cl st (read-char)))
-            ((char-word? ch) (loop rz cl 1 ch))
-            ((char-numeric? ch) (loop rz cl 2 ch))
-            ((char=? #\" ch) (loop rz cl 3 (read-char)))
-            ((char=? #\< ch) (loop rz cl 4 (read-char)))
-            ((char-punct? ch) (loop (acons 'punct ch rz) '() 0 (read-char)))
-            (else (error "st 0"))))
-          ((1) ;; word
-           (cond
-            ((eof-object? ch) (loop (acons 'word (rls cl) rz) '() 0 ch))
-            ((char-word? ch) (loop rz (cons ch cl) st (read-char)))
-            (else (loop (acons 'word (rls cl) rz) '() 0 ch))))
-          ((2) ;; number
-           (cond
-            ((eof-object? ch) (loop (acons 'num (rls cl) rz) '() 0 ch))
-            ((char-numeric? ch) (loop rz (cons ch cl) st (read-char)))
-            (else (loop (acons 'num (rls cl) rz) '()  0 ch))))
-          ((3) ;; string
-           (cond
-            ((eof-object? ch) (error "bad string"))
-            ((char=? #\\ ch)
-             (loop rz (cons* (read-char) #\\ cl) st (read-char)))
-            ((char=? #\" ch)
-             (loop (acons 'string (rls cl) rz) '() 0 (read-char)))
-            (else (loop rz (cons ch cl) st (read-char)))))
-          ((4) ;; ksym
-           (cond
-            ((eof-object? ch) (error "bad string"))
-            ((char=? #\> ch)
-             (loop (acons 'keysym (rls cl) rz) '() 0 (read-char)))
-            (else (loop rz (cons ch cl) st (read-char)))))
-          ((9)
-           (reverse rz))
-          (else
-           (error "else")))))))
+(define (kbd-read)
+  (let loop ((rz '()) (cl '()) (st 0) (ch (read-char)))
+    ;;(if sf-port (sf "ch = ~S\n" ch))
+    (case st
+      ((0)
+       (cond ;; [init]
+        ((eof-object? ch) ch)
+        ((char-whitespace? ch) (loop rz cl st (read-char)))
+        ((char-word? ch) (loop rz cl 1 ch))
+        ((char-numeric? ch) (loop rz cl 2 ch))
+        ((char=? #\" ch) (loop rz cl 3 (read-char)))
+        ((char=? #\< ch) (loop rz cl 4 (read-char)))
+        ((char-punct? ch) (cons 'punct ch))
+        (else (error "st 0"))))
+      ((1) ;; word
+       (cond
+        ((eof-object? ch) (cons 'word (rls cl)))
+        ((char-word? ch) (loop rz (cons ch cl) st (read-char)))
+        (else (unread-char ch) (cons 'word (rls cl)))))
+      ((2) ;; number
+       (cond
+        ((eof-object? ch) (cons 'num (rls cl)))
+        ((char-numeric? ch) (loop rz (cons ch cl) st (read-char)))
+        (else (unread-char ch) (cons 'num (rls cl)))))
+      ((3) ;; string
+       (cond
+        ((eof-object? ch) (error "bad string"))
+        ((char=? #\\ ch) (loop rz (cons* (read-char) #\\ cl) st (read-char)))
+        ((char=? #\" ch) (cons 'string (rls cl)))
+        (else (loop rz (cons ch cl) st (read-char)))))
+      ((4) ;; ksym
+       (cond
+        ((eof-object? ch) (error "bad string"))
+        ((char=? #\> ch) (cons 'keysym (rls cl)))
+        (else (loop rz (cons ch cl) st (read-char)))))
+      (else
+       (error "else")))))
 
 ;; charcodes for punct: "{};=[]+"
 
