@@ -75,10 +75,65 @@ exec guile $0 "$@"
       (else
        (error "else")))))
 
-;; charcodes for punct: "{};=[]+"
+(define (parse-keycodes str)
+  (with-input-from-string str
+    (lambda ()
+      (letrec
+          ((fatal
+            (lambda (msg) (throw 'kbd-parse msg)))
 
+           (p-top
+            (lambda (lxm)
+              (unless (equal? lxm '(word . "xkb_keymap")) (fatal "11"))
+              (unless (equal? (kbd-read) '(punct . "{")) (fatal "12"))
+              (let loop ((tok (kbd-read)))
+                (cond
+                 ((equal? tok '(punct . "}")) 'done)
+                 ((equal? tok '(word . "xkb_keycodes")) (p-codes tok))
+                 ((equal? tok '(word . "xkb_types")) (p-types tok))
+                 ((equal? tok '(word . "xkb_compatibility")) (p-compat tok))
+                 ((equal? tok '(word . "xkb_symbols")) (p-symbols tok))
+                 (else (fatal "13"))))))
 
-;;(pp (kbd-read "hello \"he xka \" 123"))
+           (p-codes                    ; keycodes
+            (lambda (lxm)
+              (unless (equal? lxm '(word . "xkb_keycodes")) (fatal "21"))
+              (unless (equal? (kbd-read) '(punct . "{")) (fatal "22"))
+               (let loop ((tok (kbd-read)))
+                 (cond
+                  ((equal? tok '(punct . "}")) 'done)
+                  ((equal? tok '(word . "minimum")) #t)
+                  ((equal? tok '(word . "maximum")) #t)
+                  ((equal? (car tok) 'ksym)
+                   (unless (equal? (kdb-read) '(punct . "=")) (fatal "24"))
+                   (let ((tok (kdb-read)))
+                     (unless (equal? (car tok) 'num) (fatal "25"))
+                     ;; number 
+                     ))))))
+
+           (p-1code
+             (lambda (lxm)
+               (let* ((ksym (cdr lxm))  ; keysym
+                      (lxm (xkb-read))  ; =
+                      (lxm (xkb-read))
+                      (code (string->number (cdr lxm)))) ; scan code
+                 (cons ksym code))))
+           
+           (p-types
+            (lambda (tok)
+              #f))
+
+           (p-compat
+            (lambda (tok)
+              #f))
+
+           (p-symbols
+            (lambda (tok)
+              #f))
+           
+           )
+        (p-top (kbd-read))))))
+
 
 ;;; --- last line ---
 

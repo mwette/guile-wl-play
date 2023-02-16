@@ -27,7 +27,9 @@
     (keycode-stmt
      ("minimum" "=" $nnum)
      ("maximum" "=" $nnum)
-     ($keysym "=" $nnum))
+     ($keysym "=" $nnum)
+     ("alias" $ksym "=" $ksym)
+     )
 
     (type-stmts
      ($empty)
@@ -69,7 +71,6 @@
      ("name" "[" $word "]" "=" $string)
      ("key" $keysym "{" "[" $word "]" "}"))
 
-
     )))
 
 ;; https://github.com/xkbcommon/
@@ -81,8 +82,8 @@
     (make-lalr-machine kbd-spec))))
 
 (define (gen-files)
-  (write-lalr-actions kbd-mach "kbd-mach-act.scm")
-  (write-lalr-tables kbd-mach "kbd-mach-tab.scm"))
+  (write-lalr-actions kbd-mach "kbd-act.scm")
+  (write-lalr-tables kbd-mach "kbd-tab.scm"))
 
 ;; --- last line ---
 
