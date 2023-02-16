@@ -142,6 +142,9 @@
     bv))
 
 (define (dec-fd cm)
+  ;;(sferr "cm: ~S\n" cm)
+  ;;(sferr "cm: ~S\n" (fmtbv/x cm (bytevector-length cm) 4))
+  ;;(sferr "  cmsghdr-size ~S\n" cmsghdr-size)
   (bytevector-sint-native-ref cm cmsghdr-size))
 
 ;; per spec:

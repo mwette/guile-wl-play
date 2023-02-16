@@ -8,12 +8,12 @@
 #   scheme@(guile-user)> (tryit)
 #   scheme@(guile-user)> (done)
 
-LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
+TOP=`pwd`
+
+LD_LIBRARY_PATH=$TOP:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
 
-NYACC_DIR=$HOME/repo/sv/nyacc/nyacc-rel/nyacc-1.08
-GUILE_LOAD_PATH=$NYACC_DIR/examples:$NYACC_DIR/module
-GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
+GUILE_LOAD_PATH=$TOP:$GUILE_LOAD_PATH
 export GUILE_LOAD_PATH
 
 # Fibers uses some deprecated bit ops:
@@ -74,6 +74,7 @@ exec $GDB_PFX guile $0 "$@"
 
 (use-modules (wl-client))
 (use-modules (sockmsg))
+(use-modules (kbd-parse))
 
 (use-modules (system repl server))
 (use-modules (system repl coop-server))
@@ -197,6 +198,31 @@ exec $GDB_PFX guile $0 "$@"
           (lambda args
             (when wl-debug (sferr "<= ~S:~S\n" 'iface 'meth))
             (apply #,(gen-id x "handle-" #'iface ":" #'meth) args)))))))
+
+(define-syntax fix-arg
+  (syntax-rules (<>)
+    ((_ id <>) id)
+    ((_ id ex) ex)))
+
+(define-syntax gen-id-using
+  (syntax-rules (<>)
+    ((_ (proc arg ...))
+     (let ((id (alloc-id)))
+       (proc (fix-arg id arg) ...) id))))
+
+(define-syntax add-id
+  (syntax-rules (<>)
+    ((_ iface (proc arg ...))
+     (let ((id (alloc-id)))
+       (set-object! id iface)
+       (proc (fix-arg id arg) ...)
+       id))
+    ((_ iface value (proc arg ...))
+     (let ((id (alloc-id)))
+       (set-object! id iface value)
+       (proc (fix-arg id arg) ...)
+       id))
+    ))
 
 ;; ====================================
 
@@ -420,9 +446,17 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; --- wl_keyboard
 
+(define kbd-keymap #f)
+
 (define-wl-request wl_keyboard release)
 
 (define (handle-wl_keyboard:keymap obj-id format fd size)
+  (sferr "got keymap obj ~A format ~A fd ~A size ~A\n" obj-id format fd size)
+  (sferr "\n    try (kbd-read kbd-keymap)\n\n")
+  (let* ((size (1- size)) ;; trim trailing nul
+         (mem (mmap 0 size PROT_READ MAP_PRIVATE fd 0)))
+    (set! kbd-keymap (string-copy (utf8->string mem)))
+    (close-fdes fd))
   (if #f #f))
 
 (define (handle-wl_keyboard:enter obj-id serial surface keys)
@@ -432,6 +466,8 @@ exec $GDB_PFX guile $0 "$@"
   (if #f #f))
 
 (define (handle-wl_keyboard:key obj-id serial time key state)
+  (sferr "key: ~S ~A\n" key (if (zero? state) "released" "pressed"))
+  (if (= key 28) (doit))
   (if #f #f))
 
 (define (handle-wl_keyboard:modifiers obj-id serial mods_depressed mods_latched
@@ -672,6 +708,11 @@ exec $GDB_PFX guile $0 "$@"
      (else
       (sferr "sender says wtf\n")))))
 
+(define (doc-str obj-id opcode)
+  (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
+         (decoder (and dec-vec (vector-ref dec-vec opcode))))
+    (and (procedure? decoder) (procedure-documentation decoder))))
+
 (define (receiver)
   (sferr "receiver starting ...\n")
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
@@ -692,17 +733,13 @@ exec $GDB_PFX guile $0 "$@"
         (loop n-have object-id msg-size opcode control)))
      (else
       (when io-debug (sferr "R: dispatch ~S ~S\n" object-id opcode))
-      (when #f ;; (> object-id 3)
-        (sferr "got it\n")
-        (sferr "    object-id ~S opcode ~S\n" object-id opcode)
-        (sferr "   ~A\n" (fmtbv/x ev-iobuf 8 msg-size 4))
-        (done)
-        (fsleep 0.1)
-        (exit 0))
       (dispatch object-id opcode ev-iobuf 8 control)
-      (if (> n-have msg-size)
-          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
-      (loop (- n-have msg-size) #f 8 opcode control)))))
+      (cond
+       ((> n-have msg-size)
+        (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size))
+        (loop (- n-have msg-size) #f 8 opcode control))
+       (else
+        (loop (- n-have msg-size) #f 8 opcode #f)))))))
 
 (define (monitor)
   (sferr "monitor starting ...\n")
@@ -733,7 +770,16 @@ exec $GDB_PFX guile $0 "$@"
      (sync-and-wait)
      (init-globals)
      (sync-and-wait)
+     ;;(set! appl-ptr-id (gen-id-using (wl_seat:get_pointer seat-id <>)))
+     ;;(set-object! appl-ptr-id 'wl_pointer appl-ctx) 
+     ;;(set! appl-kbd-id (gen-id-using (wl_seat:get_keyboard seat-id <>)))
+     ;;(set-object! appl-kbd-id 'wl_keyboard appl-ctx)
+     (set! appl-ptr-id
+           (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
+     (set! appl-kbd-id
+           (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
 
+     (sync-and-wait)
      (spawn-fiber monitor)
      (fsleep 0.1)
      (sferr "\n    telnet localhost 37146\n\n")
@@ -752,6 +798,10 @@ exec $GDB_PFX guile $0 "$@"
 (use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
 
+(define appl-ctx #f)
+(define appl-kbd-id #f)
+(define appl-ptr-id #f)
+
 (define (wl-format->cairo wlf)
   (case wlf
     ((0 argb8888) 'CAIRO_FORMAT_ARGB32)
@@ -760,18 +810,42 @@ exec $GDB_PFX guile $0 "$@"
 (define argb8888 0)
 (define xrgb8888 1)
 
-(define-syntax fix-arg
-  (syntax-rules (<>)
-    ((_ id <>) id)
-    ((_ id ex) ex)))
-
-(define-syntax gen-id-using
-  (syntax-rules (<>)
-    ((_ (proc arg ...))
-     (let ((id (alloc-id)))
-       (proc (fix-arg id arg) ...) id))))
-
 (define gran #x100000)                  ; bufsize granularity
+
+(define (draw-pane-1 cr wid hei)
+  (let* ((rad 40.0) (wmr (- wid rad)) (hmr (- hei rad)))
+    (cairo_save cr)
+    (cairo_set_line_width cr 1.0)
+    (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
+    (cairo_paint cr)
+    (cairo_set_source_rgb cr 0.0 0.0 0.0)
+    (cairo_move_to cr rad 0.0)
+    (cairo_curve_to cr 0.0 0.0 0.0 0.0 0.0 rad)
+    (cairo_line_to cr 0.0 hei)
+    (cairo_line_to cr wid hei)
+    (cairo_line_to cr wid rad)
+    (cairo_curve_to cr wid 0.0 wid 0.0 wmr 0.0)
+    (cairo_close_path cr)
+    (cairo_stroke cr)
+    (cairo_set_source_rgb cr 0.8 0.8 0.8)
+    (cairo_fill cr)
+    (cairo_restore cr)))
+
+(define (draw-pane-2 cr wid hei)
+  (cairo_set_source_rgb cr 0.8 0.8 0.8)
+  (cairo_set_line_width cr 2.0)
+  (cairo_move_to cr 1.0 0.0)
+  (cairo_line_to cr 1.0 299.0)
+  (cairo_line_to cr 499.0 299.0)
+  (cairo_line_to cr 499.0 0.0)
+  (cairo_stroke cr)
+  (cairo_set_line_width cr 20.0)
+  (cairo_move_to cr 1.0 10.0)
+  (cairo_line_to cr 500.0 10.0)
+  (cairo_stroke cr)
+  (cairo_restore cr))
+
+(define draw-pane draw-pane-1)
 
 (define (init-cr-txt cr)
   (let ((face "monospace")
@@ -818,10 +892,18 @@ exec $GDB_PFX guile $0 "$@"
                         ft-asc ft-dsc ft-hei ft-wid)))
     (init-cr-txt drw-cr)
     ;;
-    (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
-    (cairo_paint dpy-cr)
-    (cairo_set_source_rgb drw-cr 0.9 0.9 0.9)
-    (cairo_paint drw-cr)
+    (let ((ux (make-double)) (uy (make-double)))
+      (cairo_device_to_user_distance dpy-cr (pointer-to ux) (pointer-to uy))
+      (sferr "ux=~S yu=~S\n" (fh-object-ref ux) (fh-object-ref uy)))
+    (cond
+     (#t
+      (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
+      (cairo_paint dpy-cr)
+      (cairo_set_source_rgb drw-cr 0.9 0.9 0.9)
+      (cairo_paint drw-cr))
+     (#t ;; not working :(
+      (draw-pane dpy-cr 500.0 300.0)
+      (draw-pane drw-cr 500.0 300.0)))
     ;;
     ;;(bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
     (set-object! smp-id 'wl_shm_pool ctx)
@@ -845,8 +927,6 @@ exec $GDB_PFX guile $0 "$@"
           (set! ix (1+ ix)))
       (vector-ref text (1- ix)))))
 
-(define appl-ctx #f)
-
 (define lbr-bw 2.0)                   ; left/bottom/right border width
 (define tx-pad 4.0)
 
@@ -856,7 +936,7 @@ exec $GDB_PFX guile $0 "$@"
     (wl_surface:damage_buffer (ctx-srf-id ctx) 0 0 500 300)
     (xrf-config ctx)
     #f))
-  
+
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
   (let* ((cr (ctx-drw-cr ctx))
@@ -865,20 +945,8 @@ exec $GDB_PFX guile $0 "$@"
          (txhei (ctx-ft-hei ctx))
          (text (get-text))
          )
-    ;; draw border
-    (cairo_save cr)
-    (cairo_set_source_rgb cr 0.5 0.5 0.5)
-    (cairo_set_line_width cr 2.0)
-    (cairo_move_to cr 1.0 0.0)
-    (cairo_line_to cr 1.0 299.0)
-    (cairo_line_to cr 499.0 299.0)
-    (cairo_line_to cr 499.0 0.0)
-    (cairo_stroke cr)
-    (cairo_set_line_width cr 20.0)
-    (cairo_move_to cr 1.0 10.0)
-    (cairo_line_to cr 500.0 10.0)
-    (cairo_stroke cr)
-    (cairo_restore cr)
+    ;; draw border : looks cheesy
+    (draw-pane cr 500.0 300.0)
     
     (when #t
       (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))

@@ -307,8 +307,7 @@ SCM_DEFINE(scm_recvmsg_x, "recvmsg!", 2, 2, 0,
 
   mh.msg_iovlen = nio;
 
-  mh.msg_control = alloca (512);	/* arbitrary size: use global */
-  memset(mh.msg_control, 0x0f, 512);	/* for debugging */
+  mh.msg_control = alloca (512);	/* arbitrary size: use global ? */
   mh.msg_controllen = 512;
 
   mh.msg_flags = 0;

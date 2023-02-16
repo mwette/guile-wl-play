@@ -131,7 +131,7 @@
       "event decoder for wl_data_source:send"
       (let*-values
         (((mime_type ix) (dec-string bv ix))
-         ((fd ix) (dec-fd cm)))
+         ((fd) (dec-fd cm)))
         (values obj-id mime_type fd)))
     (lambda (obj-id bv ix cm)
       "event decoder for wl_data_source:cancelled"
@@ -287,7 +287,7 @@
       "event decoder for wl_keyboard:keymap"
       (let*-values
         (((format ix) (dec-u32 bv ix))
-         ((fd ix) (dec-fd cm))
+         ((fd) (dec-fd cm))
          ((size ix) (dec-u32 bv ix)))
         (values obj-id format fd size)))
     (lambda (obj-id bv ix cm)

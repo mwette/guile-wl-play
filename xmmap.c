@@ -122,19 +122,9 @@ SCM_DEFINE (scm_xmmap_search, "xmmap/search", 2, 4, 0,
   if (c_mem == MAP_FAILED)
     scm_syserror ("mmap");              /* errno set */
 
-  pointer = scm_cell (scm_tc7_pointer, (scm_t_bits) c_mem);
-#if 0
-  bvec = scm_c_take_typed_bytevector((signed char *) c_mem + c_offset, c_len,
-				     SCM_ARRAY_ELEMENT_TYPE_VU8, pointer);
-  scm_i_set_finalizer (SCM2PTR (bvec), xmmap_finalizer, (void*) c_len);
-#else /* ??? */
-  bvec = scm_c_make_bytevector(0);
-  SCM_SET_BYTEVECTOR_FLAGS (bvec, SCM_ARRAY_ELEMENT_TYPE_VU8);
-  SCM_BYTEVECTOR_SET_LENGTH (bvec, c_len);
-  SCM_BYTEVECTOR_SET_CONTENTS (bvec, (signed char *) c_mem + c_offset);
-  SCM_BYTEVECTOR_SET_PARENT (bvec, SCM_BOOL_F);
-  (void) pointer;
-#endif
+  pointer = scm_from_pointer ((signed char *) c_mem, mmap_finalizer);
+  bvec = scm_pointer_to_bytevector (pointer, c_len, c_offset,
+                                    SCM_ARRAY_ELEMENT_TYPE_VU8);
   return bvec;
 }
 #undef FUNC_NAME
