@@ -1,0 +1,17 @@
+#!/bin/bash
+# -*- scheme -*-
+
+NYACC=$HOME/repo/sv/nyacc/current
+export GUILE_LOAD_PATH=$GUILE_LOAD_PATH:`pwd`/..:$NYACC
+
+exec guile $0 "$@"
+!#
+
+(use-modules (kbd-parse))
+
+(if #f
+  (test-reader-lo "keymap.txt")
+  (test-reader-hi "keymap.txt"))
+
+
+;; --- last line ---
