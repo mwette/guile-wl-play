@@ -174,7 +174,7 @@
                ((fixed) `((,n ix) (dec-fixed bv ix)))
                ((string) `((,n ix) (dec-string bv ix)))
                ((array) `((,n ix) (dec-array bv ix)))
-               ((fd) `((,n ix) (dec-fd cm)))
+               ((fd) `((,n ix) (values (dec-fd cm) ix)))
                (else (sf "type=~S\n" t) (error "bad type"))))
            names types)
        (values obj-id ,@names))))
@@ -418,7 +418,7 @@
     (ff 2 "(list ")
     (for-each-pair
      (lambda (iface next)
-       (ff 8 "(make-vector ~a)"
+       (ff 8 "(make-vector ~a #f)"
            (length
             (filter
              (lambda (x) (eq? 'event (assq-ref x 'type)))

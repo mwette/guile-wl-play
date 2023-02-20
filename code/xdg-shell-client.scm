@@ -66,8 +66,8 @@
         (values obj-id token))))))
 
 (define xdg-shell-handler-vec-list
-  (list (make-vector 1) (make-vector 0) (make-vector 1) (make-vector 3) 
-        (make-vector 3)))
+  (list (make-vector 1 #f) (make-vector 0 #f) (make-vector 1 #f) 
+        (make-vector 3 #f) (make-vector 3 #f)))
 
 (add-iface-list xdg-shell-interface-list)
 (add-opcode-dict-list xdg-shell-event-opcode-dict-list)

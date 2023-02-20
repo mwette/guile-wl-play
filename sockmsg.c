@@ -307,7 +307,7 @@ SCM_DEFINE(scm_recvmsg_x, "recvmsg!", 2, 2, 0,
 
   mh.msg_iovlen = nio;
 
-  mh.msg_control = alloca (512);	/* arbitrary size */
+  mh.msg_control = alloca (512);	/* arbitrary size: use global ? */
   mh.msg_controllen = 512;
 
   mh.msg_flags = 0;
@@ -321,7 +321,10 @@ SCM_DEFINE(scm_recvmsg_x, "recvmsg!", 2, 2, 0,
   if (rv == -1)
     {
       if ((errno == EAGAIN) || (errno == EWOULDBLOCK))
-	rv = 0;
+	{
+	  mh.msg_controllen = 0;
+	  rv = 0;
+	}
       else 
 	SCM_SYSERROR;
     }

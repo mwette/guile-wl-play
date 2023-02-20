@@ -1,20 +1,23 @@
 #!/bin/bash
 # -*- scheme -*-
 #|
-# demo08 - wayland client in fibers
+# demo09 - wayland client in fibers
 # usage:
-#   $ ./demo08 1
+#   $ ./demo09 1
 #   $ telnet localhost 37146
-#   scheme@(guile-user)> (doit)
+#   scheme@(guile-user)> (tryit)
 #   scheme@(guile-user)> (done)
 
-LD_LIBRARY_PATH=`pwd`:$LD_LIBRARY_PATH
+TOP=`pwd`
+
+LD_LIBRARY_PATH=$TOP:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
 
-NYACC_DIR=$HOME/repo/sv/nyacc/nyacc-rel/nyacc-1.08
-GUILE_LOAD_PATH=$NYACC_DIR/examples:$NYACC_DIR/module
-GUILE_LOAD_PATH=`pwd`:$GUILE_LOAD_PATH
+GUILE_LOAD_PATH=$TOP:$GUILE_LOAD_PATH
 export GUILE_LOAD_PATH
+
+# Fibers uses some deprecated bit ops:
+export GUILE_WARN_DEPRECATED=no
 
 GDB_PFX=""
 if [ $# -gt 0 ]; then
@@ -23,6 +26,7 @@ if [ $# -gt 0 ]; then
     esac
 fi
 
+guild compile -O0 $0
 exec $GDB_PFX guile $0 "$@"
 |#
 !#
@@ -70,6 +74,7 @@ exec $GDB_PFX guile $0 "$@"
 
 (use-modules (wl-client))
 (use-modules (sockmsg))
+(use-modules (kbd-parse))
 
 (use-modules (system repl server))
 (use-modules (system repl coop-server))
@@ -79,7 +84,10 @@ exec $GDB_PFX guile $0 "$@"
 (use-modules (fibers conditions))
 (use-modules (fibers channels))
 
+(use-modules (ice-9 format))
 (use-modules (ice-9 pretty-print))
+(define (fferr fmt . args)
+  (apply format (current-error-port) fmt args))
 (define (sferr fmt . args)
   (apply simple-format (current-error-port) fmt args)
   (force-output (current-error-port)))
@@ -151,9 +159,9 @@ exec $GDB_PFX guile $0 "$@"
 
 (define (dispatch obj-id opcode bv ix cm)
   (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
-         (decoder (and (vector-ref dec-vec opcode)))
+         (decoder (and dec-vec (vector-ref dec-vec opcode)))
          (hlr-vec (vector-ref object-handlers-vec obj-id))
-         (handler (and (vector-ref hlr-vec opcode))))
+         (handler (and hlr-vec (vector-ref hlr-vec opcode))))
     (if (and decoder handler)
         (call-with-values (lambda () (decoder obj-id bv ix cm)) handler)
         (begin
@@ -193,6 +201,31 @@ exec $GDB_PFX guile $0 "$@"
           (lambda args
             (when wl-debug (sferr "<= ~S:~S\n" 'iface 'meth))
             (apply #,(gen-id x "handle-" #'iface ":" #'meth) args)))))))
+
+(define-syntax fix-arg
+  (syntax-rules (<>)
+    ((_ id <>) id)
+    ((_ id ex) ex)))
+
+(define-syntax gen-id-using
+  (syntax-rules (<>)
+    ((_ (proc arg ...))
+     (let ((id (alloc-id)))
+       (proc (fix-arg id arg) ...) id))))
+
+(define-syntax add-id
+  (syntax-rules (<>)
+    ((_ iface (proc arg ...))
+     (let ((id (alloc-id)))
+       (set-object! id iface)
+       (proc (fix-arg id arg) ...)
+       id))
+    ((_ iface value (proc arg ...))
+     (let ((id (alloc-id)))
+       (set-object! id iface value)
+       (proc (fix-arg id arg) ...)
+       id))
+    ))
 
 ;; ====================================
 
@@ -238,7 +271,8 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; ====================================
 
-(define rq-chan #f)                     ; channel for issuing requests
+(define rq-chan #f)                     ; channel for requests to sender
+(define ev-chan #f)                     ; channel for events to model
 (define rq-iobuf #f)
 (define ev-iobuf #f)
 
@@ -296,7 +330,7 @@ exec $GDB_PFX guile $0 "$@"
   (let ((val (vector-ref object-value-vec obj-id)))
     (if (condition? val) (signal-condition! val))
     (vector-set! object-value-vec obj-id #f))
-  (sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data)
+  ;;(sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data)
   (if #f #f))
 
 ;; --- wl_compositor
@@ -326,7 +360,7 @@ exec $GDB_PFX guile $0 "$@"
 (define-wl-request wl_buffer destroy)
 
 (define (handle-wl_buffer:release obj-id)
-  (sferr "wl_buffer:release ~s\n" obj-id)
+  ;;(sferr "wl_buffer:release ~s\n" obj-id)
   (wl_buffer:destroy obj-id)
   (vector-set! object-value-vec obj-id #f))
 
@@ -371,13 +405,145 @@ exec $GDB_PFX guile $0 "$@"
 (define-wl-request wl_seat get_touch id)
 (define-wl-request wl_seat release)
 
+(define (handle-wl_seat:capabilities obj-id capabilities)
+  (define (cap? caps key)
+    (positive? (logior caps (assq-ref wl_seat:capability-enum key))))
+  (if (not (cap? capabilities 'keyboard)) (sferr "warning: no keyboard"))
+  (if (not (cap? capabilities 'pointer)) (sferr "warning: no pointer"))
+  (if #f #f))
+ 
 (define (handle-wl_seat:name obj-id name)
-  ;;(sferr "wl_seat:name\n")
-  #f)
+  ;;(sferr "wl_seat:name ~S\n" name)
+  (if #f #f))
  
 ;; --- wl_pointer
 
+(define-wl-request wl_pointer set_cursor serial surface hotspot_x hotspot_y)
+(define-wl-request wl_pointer release)
+
+(define (handle-wl_pointer:enter obj-id serial surface surface_x surface_y)
+  (if #f #f))
+
+(define (handle-wl_pointer:leave obj-id serial surface)
+  (if #f #f))
+
+(define (handle-wl_pointer:motion obj-id time surface_x surface_y)
+  (if #f #f))
+
+(define (handle-wl_pointer:button obj-id serial time button state)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis obj-id time axis value)
+  (if #f #f))
+
+(define (handle-wl_pointer:frame obj-id)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_source obj-id axis_source)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_stop obj-id time axis)
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_discrete obj-id axis discrete)
+  (if #f #f))
+
 ;; --- wl_keyboard
+
+;; modifiers:
+;;   none = 0
+;;   shift = 1
+
+;; emacs-key: shift control meta alt hyper super
+;;     mouse: click drag down
+
+(define kbd-base-v #f)
+(define kbd-shft-v #f)
+(define kbd-mods 0)
+
+(define (set-mod key)
+  (case key
+    ((S-) (set! kbd-mods (logior kbd-mods #x1000000))) ;; 2^25, shift
+    ((C-) (set! kbd-mods (logior kbd-mods #x2000000))) ;; 2^26, control
+    ((M-) (set! kbd-mods (logior kbd-mods #x4000000))) ;; 2^27, meta
+    ((A-) (set! kbd-mods (logior kbd-mods #x0200000))) ;; 2^22, alt
+    ((H-) (set! kbd-mods (logior kbd-mods #x0800000))) ;; 2^24, hyper
+    ((Z-) (set! kbd-mods (logior kbd-mods #x0400000))) ;; 2^23, super
+    (else #f)))
+
+(define (clr-mod key)
+  (case key
+    ((S-) (set! kbd-mods (logand kbd-mods #x6FFFFFF))) ;; 2^25, shift
+    ((C-) (set! kbd-mods (logand kbd-mods #x5FFFFFF))) ;; 2^26, control
+    ((M-) (set! kbd-mods (logand kbd-mods #x3FFFFFF))) ;; 2^27, meta
+    ((A-) (set! kbd-mods (logand kbd-mods #x7DFFFFF))) ;; 2^22, alt
+    ((H-) (set! kbd-mods (logand kbd-mods #x77FFFFF))) ;; 2^24, hyper
+    ((Z-) (set! kbd-mods (logand kbd-mods #x7BFFFFF))) ;; 2^23, super
+    (else #f)))
+
+(define mod-syms '(alt super hyper shift control meta))
+
+(define (uncap-mods mods)
+  (logand mods #x6FFFFFF))
+
+;; #\b #\B =>
+;;    (control #\b) on control+b 
+;;    (#\B) on shift+b 
+(define (encase/mods base shft)
+  (define (doit ksym mods)
+    (let loop ((seq (list ksym)) (mask #x0200000) (syms mod-syms))
+      (if (null? syms) seq
+          (loop (if (positive? (logand mask mods)) (cons (car syms) seq) seq)
+                (* 2 mask) (cdr syms)))))
+  (if (and (char? base) shft (positive? (logand kbd-mods #x1000000)))
+      (doit shft (uncap-mods kbd-mods))
+      (doit base kbd-mods)))
+      
+(define-wl-request wl_keyboard release)
+
+(define (handle-wl_keyboard:keymap obj-id format fd size)
+  ;;(sferr "got keymap obj ~A format ~A fd ~A size ~A\n" obj-id format fd size)
+  ;; ASSUME format is xkb
+  ;;
+  (let* ((size (1- size)) ;; trim trailing nul
+         (mem (mmap 0 size PROT_READ MAP_PRIVATE fd 0))
+         (kmpair (get-keymaps (utf8->string mem))))
+    (set! kbd-base-v (car kmpair))
+    (set! kbd-shft-v (cdr kmpair))
+    (close-fdes fd))
+  (if #f #f))
+
+(define (handle-wl_keyboard:enter obj-id serial surface keys)
+  ;; modifiers coming ...
+  (sferr "kb enter, keys = ~S\n" keys)
+  (if #f #f))
+
+(define (handle-wl_keyboard:leave obj-id serial surface)
+  (sferr "kb leave~S\n")
+  (if #f #f))
+
+(define (handle-wl_keyboard:key obj-id serial time key state)
+  ;;(fferr "mods: ~x\n" kbd-mods)
+  (let ((base (vector-ref kbd-base-v key))
+        (shft (vector-ref kbd-shft-v key)))
+    (if (zero? state)
+        (or (and (symbol? base) (clr-mod base))
+            (put-message ev-chan (encase/mods base shft)))
+        (or (and (symbol? base) (set-mod base))))
+    ;;(sferr "key ~A: ~S => ~S, ~A\n"(if (zero? state) "rel" "prs") key base)
+    ;;(if (= key 28) (doit))
+    (if #f #f)))
+
+(define (handle-wl_keyboard:modifiers obj-id serial
+                                      mods_depressed mods_latched mods_locked
+                                      group)
+  (unless (and (zero? mods_depressed) (zero? mods_latched))
+    (fferr "modifiers: prsd=0x~x lchd=0x~x grp=~s\n"
+           mods_depressed mods_latched group))
+  (if #f #f))
+
+(define (handle-wl_keyboard:repeat_info obj-id rate delay)
+  (if #f #f))
 
 ;; --- wl_touch
 
@@ -504,7 +670,23 @@ exec $GDB_PFX guile $0 "$@"
   (wl-event wl_buffer release)
   (wl-event wl_surface enter)
   (wl-event wl_surface leave)
+  (wl-event wl_seat capabilities)
   (wl-event wl_seat name)
+  (wl-event wl_pointer enter)
+  (wl-event wl_pointer leave)
+  (wl-event wl_pointer motion)
+  (wl-event wl_pointer button)
+  (wl-event wl_pointer axis)
+  (wl-event wl_pointer frame)
+  (wl-event wl_pointer axis_source)
+  (wl-event wl_pointer axis_stop)
+  (wl-event wl_pointer axis_discrete)
+  (wl-event wl_keyboard keymap)
+  (wl-event wl_keyboard enter)
+  (wl-event wl_keyboard leave)
+  (wl-event wl_keyboard key)
+  (wl-event wl_keyboard modifiers)
+  (wl-event wl_keyboard repeat_info)
   (wl-event wl_output geometry)
   (wl-event wl_output mode)
   (wl-event wl_output done)
@@ -532,6 +714,7 @@ exec $GDB_PFX guile $0 "$@"
 
 (define shm-id #f)
 (define comp-id #f)
+(define seat-id #f)
 (define base-id #f)
 
 (define (get-registry)
@@ -540,6 +723,7 @@ exec $GDB_PFX guile $0 "$@"
 (define (init-globals)
   (unless comp-id (set! comp-id (bind-global "wl_compositor")))
   (unless shm-id (set! shm-id (bind-global "wl_shm")))
+  (unless seat-id (set! seat-id (bind-global "wl_seat")))
   (unless base-id (set! base-id (bind-global "xdg_wm_base")))
   #t)
 
@@ -592,6 +776,11 @@ exec $GDB_PFX guile $0 "$@"
      (else
       (sferr "sender says wtf\n")))))
 
+(define (doc-str obj-id opcode)
+  (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
+         (decoder (and dec-vec (vector-ref dec-vec opcode))))
+    (and (procedure? decoder) (procedure-documentation decoder))))
+
 (define (receiver)
   (sferr "receiver starting ...\n")
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
@@ -613,9 +802,25 @@ exec $GDB_PFX guile $0 "$@"
      (else
       (when io-debug (sferr "R: dispatch ~S ~S\n" object-id opcode))
       (dispatch object-id opcode ev-iobuf 8 control)
-      (if (> n-have msg-size)
-          (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size)))
-      (loop (- n-have msg-size) #f 8 opcode control)))))
+      (cond
+       ((> n-have msg-size)
+        (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size))
+        (loop (- n-have msg-size) #f 8 opcode control))
+       (else
+        (loop (- n-have msg-size) #f 8 opcode #f)))))))
+
+(define (model)
+  (sferr "model starting ...\n")
+  (let loop ((evq '()))
+    (cond
+     ((get-message ev-chan) =>
+      (lambda (evt)
+        (sferr "M: queue evt ~S\n" evt)
+        ;;(loop (cons evt evq))
+        (loop evq)
+        ))
+     (else
+      (sferr "model says wtf\n")))))
 
 (define (monitor)
   (sferr "monitor starting ...\n")
@@ -646,14 +851,24 @@ exec $GDB_PFX guile $0 "$@"
      (sync-and-wait)
      (init-globals)
      (sync-and-wait)
+     (set! appl-ptr-id
+           (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
+     (set! appl-kbd-id
+           (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
 
+     (set! ev-chan (make-channel))
+     (sync-and-wait)
+     (spawn-fiber model)
+
+     (sync-and-wait)
      (spawn-fiber monitor)
+     (fsleep 0.1)
      (sferr "\n    telnet localhost 37146\n\n")
      ;;
      (create-it)
      (if (> (length (program-arguments)) 1)
          (wait done-cond)
-         (fsleep 4.0))
+         (fsleep 20.0))
      (force-output (current-error-port))
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))
@@ -664,6 +879,10 @@ exec $GDB_PFX guile $0 "$@"
 (use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
 
+(define appl-ctx #f)
+(define appl-kbd-id #f)
+(define appl-ptr-id #f)
+
 (define (wl-format->cairo wlf)
   (case wlf
     ((0 argb8888) 'CAIRO_FORMAT_ARGB32)
@@ -672,18 +891,42 @@ exec $GDB_PFX guile $0 "$@"
 (define argb8888 0)
 (define xrgb8888 1)
 
-(define-syntax fix-arg
-  (syntax-rules (<>)
-    ((_ id <>) id)
-    ((_ id ex) ex)))
-
-(define-syntax gen-id-using
-  (syntax-rules (<>)
-    ((_ (proc arg ...))
-     (let ((id (alloc-id)))
-       (proc (fix-arg id arg) ...) id))))
-
 (define gran #x100000)                  ; bufsize granularity
+
+(define (draw-pane-1 cr wid hei)
+  (let* ((rad 40.0) (wmr (- wid rad)) (hmr (- hei rad)))
+    (cairo_save cr)
+    (cairo_set_line_width cr 1.0)
+    (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
+    (cairo_paint cr)
+    (cairo_set_source_rgb cr 0.0 0.0 0.0)
+    (cairo_move_to cr rad 0.0)
+    (cairo_curve_to cr 0.0 0.0 0.0 0.0 0.0 rad)
+    (cairo_line_to cr 0.0 hei)
+    (cairo_line_to cr wid hei)
+    (cairo_line_to cr wid rad)
+    (cairo_curve_to cr wid 0.0 wid 0.0 wmr 0.0)
+    (cairo_close_path cr)
+    (cairo_stroke cr)
+    (cairo_set_source_rgb cr 0.8 0.8 0.8)
+    (cairo_fill cr)
+    (cairo_restore cr)))
+
+(define (draw-pane-2 cr wid hei)
+  (cairo_set_source_rgb cr 0.8 0.8 0.8)
+  (cairo_set_line_width cr 2.0)
+  (cairo_move_to cr 1.0 0.0)
+  (cairo_line_to cr 1.0 299.0)
+  (cairo_line_to cr 499.0 299.0)
+  (cairo_line_to cr 499.0 0.0)
+  (cairo_stroke cr)
+  (cairo_set_line_width cr 20.0)
+  (cairo_move_to cr 1.0 10.0)
+  (cairo_line_to cr 500.0 10.0)
+  (cairo_stroke cr)
+  (cairo_restore cr))
+
+(define draw-pane draw-pane-1)
 
 (define (init-cr-txt cr)
   (let ((face "monospace")
@@ -730,10 +973,18 @@ exec $GDB_PFX guile $0 "$@"
                         ft-asc ft-dsc ft-hei ft-wid)))
     (init-cr-txt drw-cr)
     ;;
-    (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
-    (cairo_paint dpy-cr)
-    (cairo_set_source_rgb drw-cr 0.9 0.9 0.9)
-    (cairo_paint drw-cr)
+    (let ((ux (make-double)) (uy (make-double)))
+      (cairo_device_to_user_distance dpy-cr (pointer-to ux) (pointer-to uy))
+      (sferr "ux=~S yu=~S\n" (fh-object-ref ux) (fh-object-ref uy)))
+    (cond
+     (#t
+      (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
+      (cairo_paint dpy-cr)
+      (cairo_set_source_rgb drw-cr 0.9 0.9 0.9)
+      (cairo_paint drw-cr))
+     (#t ;; not working :(
+      (draw-pane dpy-cr 500.0 300.0)
+      (draw-pane drw-cr 500.0 300.0)))
     ;;
     ;;(bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
     (set-object! smp-id 'wl_shm_pool ctx)
@@ -757,8 +1008,6 @@ exec $GDB_PFX guile $0 "$@"
           (set! ix (1+ ix)))
       (vector-ref text (1- ix)))))
 
-(define appl-ctx #f)
-
 (define lbr-bw 2.0)                   ; left/bottom/right border width
 (define tx-pad 4.0)
 
@@ -768,7 +1017,7 @@ exec $GDB_PFX guile $0 "$@"
     (wl_surface:damage_buffer (ctx-srf-id ctx) 0 0 500 300)
     (xrf-config ctx)
     #f))
-  
+
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
   (let* ((cr (ctx-drw-cr ctx))
@@ -777,20 +1026,8 @@ exec $GDB_PFX guile $0 "$@"
          (txhei (ctx-ft-hei ctx))
          (text (get-text))
          )
-    ;; draw border
-    (cairo_save cr)
-    (cairo_set_source_rgb cr 0.5 0.5 0.5)
-    (cairo_set_line_width cr 2.0)
-    (cairo_move_to cr 1.0 0.0)
-    (cairo_line_to cr 1.0 299.0)
-    (cairo_line_to cr 499.0 299.0)
-    (cairo_line_to cr 499.0 0.0)
-    (cairo_stroke cr)
-    (cairo_set_line_width cr 20.0)
-    (cairo_move_to cr 1.0 10.0)
-    (cairo_line_to cr 500.0 10.0)
-    (cairo_stroke cr)
-    (cairo_restore cr)
+    ;; draw border : looks cheesy
+    (draw-pane cr 500.0 300.0)
     
     (when #t
       (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))
@@ -818,7 +1055,6 @@ exec $GDB_PFX guile $0 "$@"
     (xdg_toplevel:set_title top-id "wl-play")
     (xdg_toplevel:set_max_size top-id width height)
     (xdg_toplevel:set_min_size top-id width height)
-    (sferr "commit1\n")
     (wl_surface:commit srf-id)
     (if #f #f)))
   

@@ -131,7 +131,7 @@
       "event decoder for wl_data_source:send"
       (let*-values
         (((mime_type ix) (dec-string bv ix))
-         ((fd ix) (dec-fd cm)))
+         ((fd) (dec-fd cm)))
         (values obj-id mime_type fd)))
     (lambda (obj-id bv ix cm)
       "event decoder for wl_data_source:cancelled"
@@ -287,7 +287,7 @@
       "event decoder for wl_keyboard:keymap"
       (let*-values
         (((format ix) (dec-u32 bv ix))
-         ((fd ix) (dec-fd cm))
+         ((fd) (dec-fd cm))
          ((size ix) (dec-u32 bv ix)))
         (values obj-id format fd size)))
     (lambda (obj-id bv ix cm)
@@ -430,12 +430,14 @@
    (vector)))
 
 (define wayland-handler-vec-list
-  (list (make-vector 2) (make-vector 2) (make-vector 1) (make-vector 0) 
-        (make-vector 0) (make-vector 1) (make-vector 1) (make-vector 3) 
-        (make-vector 6) (make-vector 6) (make-vector 0) (make-vector 0) 
-        (make-vector 3) (make-vector 2) (make-vector 2) (make-vector 9) 
-        (make-vector 6) (make-vector 7) (make-vector 6) (make-vector 0) 
-        (make-vector 0) (make-vector 0)))
+  (list (make-vector 2 #f) (make-vector 2 #f) (make-vector 1 #f) 
+        (make-vector 0 #f) (make-vector 0 #f) (make-vector 1 #f) 
+        (make-vector 1 #f) (make-vector 3 #f) (make-vector 6 #f) 
+        (make-vector 6 #f) (make-vector 0 #f) (make-vector 0 #f) 
+        (make-vector 3 #f) (make-vector 2 #f) (make-vector 2 #f) 
+        (make-vector 9 #f) (make-vector 6 #f) (make-vector 7 #f) 
+        (make-vector 6 #f) (make-vector 0 #f) (make-vector 0 #f) 
+        (make-vector 0 #f)))
 
 (add-iface-list wayland-interface-list)
 (add-opcode-dict-list wayland-event-opcode-dict-list)
