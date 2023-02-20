@@ -1,8 +1,23 @@
-#!/bin/bash
-# -*- scheme -*-
+;; kbd-parse.scm
+;; Copyright (C) 2023 Matthew Wette
+;;
+;; This library is free software; you can redistribute it and/or
+;; modify it under the terms of the GNU Lesser General Public
+;; License as published by the Free Software Foundation; either
+;; version 3 of the License, or (at your option) any later version.
+;;
+;; This library is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;; Lesser General Public License for more details.
+;;
+;; You should have received a copy of the GNU Lesser General Public License
+;; along with this library; if not, see <http://www.gnu.org/licenses/>.
 
-exec guile $0 "$@"
-!#
+;; https://wiki.archlinux.org/title/X_keyboard_extension
+;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Keyboard-Events.html
+;;   meta control shift hyper super alt
+
 
 ;; keycodes: scan code to keysym
 ;;    <FOO> = 24 ;
@@ -12,23 +27,23 @@ exec guile $0 "$@"
 ;;    <ESC> => Escape
 
 (define-module (kbd-parse)
-  #:export (kbd-read parse-kbd)
-  )
+  #:export (kbd-read parse-kbd))
+
 (define sf-port
   (case 1 ((1) #t) ((2) (open-output-file "foo")) (else #f)))
 (define (sf fmt . args) (apply simple-format sf-port fmt args))
-(use-modules (ice-9 pretty-print))
-(define pp pretty-print)
-
-(use-modules (ice-9 pretty-print))
-(define (pperr exp)
-  (pretty-print exp (current-error-port) #:per-line-prefix "  "))
 (define (sferr fmt . args)
   (apply simple-format (current-error-port) fmt args))
-
+(use-modules (ice-9 pretty-print))
+(define pp pretty-print)
+(define (pperr exp)
+  (pretty-print exp (current-error-port) #:per-line-prefix "  "))
 
 (include-from-path "kbd-parse/kbd-tab.scm")
-(include-from-path "kbd-parse/kbd-act.scm")
+
+(define rls reverse-list->string)
+(define rlv (lambda (ls) (list->vector (reverse ls))))
+(define fxd->num string->number)
 
 (define digit "0123456789")
 
@@ -54,7 +69,7 @@ exec guile $0 "$@"
     (lambda (ch) (char-set-contains? cs ch))))
 
 (define (tok-str->val str)
-  (assoc-ref kbd-mtab str))
+  (assoc-ref mtab str))
 
 (define kbd-read
   (let (($word (tok-str->val '$word))
@@ -64,18 +79,16 @@ exec guile $0 "$@"
         ($end (tok-str->val '$end))
         (eof (with-input-from-string "" read-char)))
 
-    (define rls reverse-list->string)
-
     (define (return key val)
       (cond
        ((eq? key $word)
         (cond
-         ((assoc-ref kbd-mtab val) =>
+         ((assoc-ref mtab val) =>
           (lambda (key) (cons key val)))
          (else (cons $word val))))
        ((eq? key 'punct)
         (let ((sval (string val)))
-          (cons (assoc-ref kbd-mtab sval) sval)))
+          (cons (assoc-ref mtab sval) sval)))
        (else
         (cons key val))))
 
@@ -131,107 +144,91 @@ exec guile $0 "$@"
 
 ;; =============================================================================
 
-(define $default 1)
-(define $error 2)
+(define xkbkey->guile
+  `(
+    ("Escape" . #\esc) ("exclaim" . #\!) ("at" . #\@) ("numbersign" . #\#)
+    ("dollar" . #\$) ("percent" . #\%) ("asciicircum" . #\^) ("asterisk" . #\*)
+    ("parenleft" . #\)) ("parenright" . #\)) ("minus" . #\-)
+    ("underscore" . #\_) ("equal" . #\=) ("plus" . #\+) ("Backspace" . #\bs)
+    ("Tab" . #\tab) ("ISO_Left_Tab" . #\tab) ("bracketleft" . #\[)
+    ("bracketright" . #\]) ("braceleft" . #\{) ("braceright" . #\})
+    ("Return" . #\cr) ("semicolon" . #\;) ("colon" . #\:) ("apostrophe" . #\')
+    ("quotedbl" . #\") ("grave" . #\`) ("asciitilde" . #\~) ("backslash" . #\\)
+    ("bar" . #\|) ("comma" . #\,) ("less" . #\<) ("period" . #\.)
+    ("greater" . #\>) ("slash" . #\/) ("question" . #\?) ("space" . #\sp)
+    ;; meta control shift hyper super alt
+    ("Meta_L" . M-) ("Meta_R" . M-)
+    ("Control_L" . C-) ("Control_R" . C-)
+    ("Shift_L" . S-) ("Shift_R" . S-)
+    ("Hyper_L" . H-) ("Hyper_R" . H-)
+    ("Super_L" . Z-) ("Super_R" . Z-)
+    ("Alt_L" . A-) ("Alt_R" . A-)
+    ;;
+    ("Caps_Lock" . LCTL)
+    ))
 
-(define (vector-map proc vec)		; see (srfi srfi-43)
-  (let* ((ln (vector-length vec)) (res (make-vector ln)))
-    (let loop ((ix 0))
-      (unless (= ix ln)
-	(vector-set! res ix (proc ix (vector-ref vec ix)))
-	(loop (1+ ix))))
-    res))
+;;(define keycode-vec #f)
+(define basekey-v #f)
+(define shftkey-v #f)
+(define kbd-coded (make-hash-table 997))
+(define kbd-groupd (make-hash-table 7))
+(export keycode-vec)
 
-(define (wrap-action actn)		; see util.scm
-  (define (mkarg i) (string->symbol (string-append "$" (number->string i))))
-  (define (make-arg-list n) (let loop ((r '(. $rest)) (i 1))
-			      (if (> i n) r (loop (cons (mkarg i) r) (1+ i)))))
-  (cons* 'lambda (make-arg-list (car actn)) (cdr actn)))
+(include-from-path "kbd-parse/kbd-act.scm")
 
-(define (make-xct av env)
-  (if (procedure? (vector-ref av 0))
-      av
-      (vector-map (lambda (ix f)
-		    (eval f (or env (current-module))))
-		  (vector-map (lambda (ix actn) (wrap-action actn)) av))))
+;; =============================================================================
 
-(define (dmsg/n s t a ntab)
+(define (dmsg s t a ntab)
   (let ((t (or (assq-ref ntab t) t)))
     (cond
      ((not a) (sferr "state ~S, token ~S\t=> parse error\n" s t))
      ((positive? a) (sferr "state ~S, token ~S  => shift, goto ~S\n" s t a))
      ((negative? a) (sferr "state ~S, token ~S  => reduce ~S\n" s t (- a)))
      ((zero? a) (sferr "state ~S, token ~S  => accept\n" s t))
-     (else (error "coding error in (nyacc parse)")))))
+     (else (error "coding error in parser")))))
 
 (define (parse-error state laval)
-  (let* ((sp (source-properties laval))
-         (fn (or (assq-ref sp 'filename)
-                 (port-filename (current-input-port))
-                 "(unknown)"))
-	 (ln (1+ (or (assq-ref sp 'line) (port-line (current-input-port))))))
-    (throw 'nyacc-error
-	   "~A:~A: parse failed at state ~A, on input ~S"
+  (let* ((fn (or (port-filename (current-input-port)) "(unknown)"))
+	 (ln (1+ (port-line (current-input-port)))))
+    (throw 'kbd-error "~A:~A: parse failed at state ~A, on input ~S"
 	   fn ln (car state) (cdr laval))))
 
-(define* (make-lalr-parser/num mach #:key (skip-if-unexp '()) interactive env)
-  (let* ((len-v (assq-ref mach 'len-v))
-	 (rto-v (assq-ref mach 'rto-v))
-	 (pat-v (assq-ref mach 'pat-v))
-	 (xct-v (make-xct (assq-ref mach 'act-v) env))
-	 (ntab (assq-ref mach 'ntab))
-	 (start (assq-ref (assq-ref mach 'mtab) '$start)))
-    (lambda* (lexr #:key debug)
-      (let loop ((state (list 0))	; state stack
-		 (stack (list '$@))	; semantic value stack
-		 (nval #f)		; non-terminal from prev reduction
-		 (lval #f))		; lexical value (from lex'r)
+(define* (parse-kbd #:key debug)
+  (define $default 1)
+  
+  (let loop ((state (list 0))	; state stack
+	     (stack (list '$@))	; semantic value stack
+	     (nval #f)		; non-terminal from prev reduction
+	     (lval #f))		; lexical value (from lex'r)
+    (cond
+     ((not (or nval lval))
+      (if (eqv? $default (caar (vector-ref pat-v (car state))))
+	  (loop state stack (cons $default #f) lval)
+	  (loop state stack nval (kbd-read))))
+     (else
+      (let* ((laval (or nval lval))
+	     (tval (car laval))
+	     (sval (cdr laval))
+	     (stxl (vector-ref pat-v (car state)))
+	     (stx (or (assq-ref stxl tval)
+		      (assq-ref stxl $default)
+		      #f)))
+	(if debug (dmsg (car state) (if nval tval sval) stx ntab))
 	(cond
-	 ((and interactive nval
-	       (eqv? (car nval) start)
-	       (zero? (car state)))     ; done
-	  (cdr nval))
-	 ((not (or nval lval))
-	  (if (eqv? $default (caar (vector-ref pat-v (car state))))
-	      (loop state stack (cons-source stack $default #f) lval)
-	      (loop state stack nval (lexr))))		 ; reload
-	 (else
-	  (let* ((laval (or nval lval))
-		 (tval (car laval))
-		 (sval (cdr laval))
-		 (stxl (vector-ref pat-v (car state)))
-		 (stx (or (assq-ref stxl tval)
-			  (and (not (memq tval skip-if-unexp))
-			       (assq-ref stxl $default))
-			  #f)))		; error
-	    (if debug (dmsg/n (car state) (if nval tval sval) stx ntab))
-	    (cond
-	     ((eq? #f stx)		; error
-	      (if (memq tval skip-if-unexp)
-		  (loop state stack #f #f)
-		  (parse-error state laval)))
-	     ((negative? stx)		; reduce
-	      (let* ((gx (abs stx))
-		     (gl (vector-ref len-v gx))
-		     ($$ (apply (vector-ref xct-v gx) stack))
-		     (pobj (if (zero? gl) laval (list-tail stack (1- gl))))
-		     (pval (source-properties pobj))
-		     (tval (cons-source pobj (vector-ref rto-v gx) $$)))
-		(if (supports-source-properties? $$)
-		    (set-source-properties! $$ pval))
-		(loop (list-tail state gl) (list-tail stack gl) tval lval)))
-	     ((positive? stx)		; shift
-	      (loop (cons stx state) (cons-source laval sval stack) 
-		    #f (if nval lval #f)))
-	     (else			; accept
-	      (car stack))))))))))
+	 ((eq? #f stx)                  ; error
+	  (parse-error state laval))
+	 ((negative? stx)		; reduce
+	  (let* ((gx (abs stx))
+		 (gl (vector-ref len-v gx))
+		 ($$ (apply (vector-ref act-v gx) stack))
+		 (tval (cons (vector-ref rto-v gx) $$)))
+	    (loop (list-tail state gl) (list-tail stack gl) tval lval)))
+	 ((positive? stx)		; shift
+	  (loop (cons stx state) (cons sval stack) #f (if nval lval #f)))
+	 (else                          ; accept
+	  (car stack))))))))
 
 ;; =============================================================================
-
-(define raw-parser (make-lalr-parser/num (acons 'act-v kbd-act-v kbd-tables)))
-
-(define* (parse-kbd)
-  (raw-parser kbd-read))
 
 (define-public (test-reader-lo filename)
   (with-input-from-file filename
@@ -243,5 +240,13 @@ exec guile $0 "$@"
   
 (define-public (test-reader-hi filename)
   (pp (with-input-from-file filename parse-kbd)))
+
+(define-public (test-reader-kv filename)
+  (with-input-from-file filename parse-kbd)
+  (let loop ((nd 40) (ix 30))
+    (when (< ix nd)
+      (sf "~S ~S\n" (vector-ref basekey-v ix) (vector-ref shftkey-v ix))
+      (loop nd (1+ ix)))
+  ))
   
 ;;; --- last line ---

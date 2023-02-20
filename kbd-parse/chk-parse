@@ -9,9 +9,11 @@ exec guile $0 "$@"
 
 (use-modules (kbd-parse))
 
-(if #f
-  (test-reader-lo "keymap.txt")
-  (test-reader-hi "keymap.txt"))
+(case 3
+ ((1) (test-reader-lo "keymap.txt"))
+ ((2) (test-reader-hi "keymap.txt"))
+ ((3) (test-reader-kv "keymap.txt"))
+ (else #f))
 
 
 ;; --- last line ---

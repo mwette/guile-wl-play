@@ -1,9 +1,7 @@
 
 (define-module (kbd-parse mach)
   #:export (kbd-spec kbd-mach gen-files)
-  #:use-module (nyacc lalr)
-  ;;#:use-module (nyacc parse)
-  )
+  #:use-module (nyacc lalr))
 
 (define kbd-spec
   (lalr-spec
@@ -25,20 +23,25 @@
      ($empty)
      (keycode-stmts keycode-stmt ";"))
     (keycode-stmt
-     ("minimum" "=" $fixed)
-     ("maximum" "=" $fixed)
-     ($keysym "=" $fixed)
+     ("minimum" "=" $fixed ($$ '()))
+     ("maximum" "=" $fixed
+      ($$
+       (set! basekey-v (make-vector (1+ (fxd->num $3))))
+       (set! shftkey-v (make-vector (1+ (fxd->num $3))))
+       ))
+     ($keysym "=" $fixed
+      ($$ (hash-set! kbd-coded $1 (fxd->num $3)) #f))
      ("indicator" $fixed "=" $string)
-     ("alias" $keysym "=" $keysym)
-     )
+     ("alias" $keysym "=" $keysym
+      ($$ (let ((kcode (hash-ref kbd-coded $4)))
+            (hash-set! kbd-coded $2 kcode)))))
 
     (type-stmts
      ($empty)
      (type-stmts type-stmt ";"))
     (type-stmt
-     ("virtual_modifiers" name-list)
-     ("type" $string "{" type-qual-stmts "}")
-     )
+     ("virtual_modifiers" symbol-list)
+     ("type" $string "{" type-qual-stmts "}"))
     (type-qual-stmts
      ($empty)
      (type-qual-stmts type-qual-stmt ";"))
@@ -46,25 +49,16 @@
      ("modifiers" "=" word-sum)
      ("map" "[" word-sum "]" "=" $fixed)
      ("preserve" "[" word-sum "]" "=" $word)
-     ("level_name" "[" $fixed "]" "=" $string)
-     )
-    (word-sum
-     ($word)
-     (word-sum "+" $word))
-
-    (name-list
-     ($word)
-     (name-list "," $word))
+     ("level_name" "[" $fixed "]" "=" $string))
 
     (compat-stmts
      ($empty)
      (compat-stmts compat-stmt ";"))
     (compat-stmt
-     ("virtual_modifiers" name-list)
+     ("virtual_modifiers" symbol-list)
      ("interpret" "." $word "=" $word)
      ("interpret" word-sum "(" word-sum ")" "{" detail-stmts "}")
-     ("indicator" $string "{" detail-stmts "}")
-     )
+     ("indicator" $string "{" detail-stmts "}"))
     (detail-stmts
      ($empty)
      (detail-stmts detail-stmt ";"))
@@ -73,8 +67,7 @@
      ($word "=" $fixed)
      ("action" "=" $word "(" ")")
      ("action" "=" $word "(" arg-list ")")
-     ("modifiers" "=" $word)
-     )
+     ("modifiers" "=" $word))
     (arg-list
      (arg)
      (arg-list "," arg))
@@ -86,49 +79,55 @@
      ($word "[" $fixed "]" "=" $fixed)
      ("!" $word)
      ("modifiers" "=" $word)
-     ("type" "=" $fixed)
-     )
+     ("type" "=" $fixed))
     (loc-sign ($empty) ("+") ("-"))
     
-    #|
-    xkb_symbols "(unnamed)" {
-        name[Group1]="English (US)";
-        name[Group2]="English (US)";
-
-        key <ESC>                {      [          Escape ] };
-        key <AE01>               {
-                symbols[Group1]= [               1,          exclam ],
-                symbols[Group2]= [               1,          exclam ]
-        };
-    |#
     (symbol-stmts
      ($empty)
      (symbol-stmts symbol-stmt ";"))
     (symbol-stmt
-     ("name" "[" $word "]" "=" $string)
-     ("key" $keysym "{" key-details "}")
-     ("modifier_map" $word "{" keysym-list "}")
-     )
-    (key-details
-     (key-detail)
-     (key-details "," key-detail))
-    (key-detail
-     ("type" "=" $string)
-     ("[" kd-list "]")
-     ("symbols" "[" $word "]" "=" "[" kd-list "]")
-     )
-    (kd-list
-     (kd)
-     (kd-list "," kd))
-    (kd
-     ($fixed)
-     ($word))
-    (keysym-list
+     ("name" "[" $word "]" "=" $string
+      ($$ (hash-set! kbd-groupd $3 $6) #f))
+     ("key" $keysym "{" keysym-detail "}"
+      ($$ (let* ((kcode (hash-ref kbd-coded $2))
+                 (nelt (vector-length $4))
+                 (elt1 (vector-ref $4 0))
+                 (elt2 (and (> nelt 1) (vector-ref $4 1)))
+                 (val1 (cond
+                        ((= (string-length elt1) 1) (string-ref elt1 0))
+                        ((assoc-ref xkbkey->guile elt1))
+                        (else #f)))
+                 (val2 (cond
+                        ((not elt2) val1)
+                        ((= (string-length elt2) 1) (string-ref elt2 0))
+                        ((assoc-ref xkbkey->guile elt2))
+                        (else val1))))
+            (and val1 (vector-set! basekey-v kcode val1))
+            (and val2 (vector-set! shftkey-v kcode val2)))))
+     ("modifier_map" $word "{" ksym-list "}"))
+    (keysym-detail
+     ("[" symbol-list "]" ($$ (rlv $2)))
+     (keysym-symbols))
+    (keysym-symbols
+     (keysym-symbol)
+     (keysym-symbols "," keysym-symbol ($$ (if $1 $1 $3))))
+    (keysym-symbol
+     ("type" "=" $string ($$ #f))
+     ("symbols" "[" $word "]" "=" "[" symbol-list "]"
+      ($$ (and (string=? $3 "Group1") (rlv $7)))))
+
+    (ksym-list
      ($keysym)
-     (keysym-list "," $keysym))
-
+     (ksym-list "," $keysym))
+    (word-sum
+     ($word)
+     (word-sum "+" $word))
+    (symbol-list
+     (symbol ($$ (list $1)))
+     (symbol-list "," symbol ($$ (cons $3 $1))))
+    (symbol ($fixed) ($word)) ;; convert numeric to symbol here
     )))
-
+  
 ;; https://github.com/xkbcommon/
 ;;     libxkbcommon/blob/master/doc/keymap-format-text-v1.md
 
@@ -138,9 +137,7 @@
     (make-lalr-machine kbd-spec))))
 
 (define (gen-files)
-  (write-lalr-actions kbd-mach "kbd-act.scm" #:prefix "kbd-")
-  (write-lalr-tables kbd-mach "kbd-tab.scm" #:prefix "kbd-"))
+  (write-lalr-actions kbd-mach "kbd-act.scm")
+  (write-lalr-tables kbd-mach "kbd-tab.scm"))
 
 ;; --- last line ---
-
-    
