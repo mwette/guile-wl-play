@@ -228,6 +228,10 @@
 	 (else                          ; accept
 	  (car stack))))))))
 
+(define-public (get-keymaps km-str)
+  (with-input-from-string km-str parse-kbd)
+  (cons basekey-v shftkey-v))
+
 ;; =============================================================================
 
 (define-public (test-reader-lo filename)

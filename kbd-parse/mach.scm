@@ -98,12 +98,13 @@
                         ((assoc-ref xkbkey->guile elt1))
                         (else #f)))
                  (val2 (cond
-                        ((not elt2) val1)
+                        ((not elt2) #f)
                         ((= (string-length elt2) 1) (string-ref elt2 0))
                         ((assoc-ref xkbkey->guile elt2))
-                        (else val1))))
-            (and val1 (vector-set! basekey-v kcode val1))
-            (and val2 (vector-set! shftkey-v kcode val2)))))
+                        (else #f))))
+            ;; X11 keeps first 8 blank, so wayland subtracts off 8
+            (and val1 (vector-set! basekey-v (- kcode 8) val1))
+            (and val2 (vector-set! shftkey-v (- kcode 8) val2)))))
      ("modifier_map" $word "{" ksym-list "}"))
     (keysym-detail
      ("[" symbol-list "]" ($$ (rlv $2)))

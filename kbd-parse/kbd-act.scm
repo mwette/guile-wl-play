@@ -127,12 +127,14 @@
             (val1 (cond ((= (string-length elt1) 1) (string-ref elt1 0))
                         ((assoc-ref xkbkey->guile elt1))
                         (else #f)))
-            (val2 (cond ((not elt2) val1)
+            (val2 (cond ((not elt2) #f)
                         ((= (string-length elt2) 1) (string-ref elt2 0))
                         ((assoc-ref xkbkey->guile elt2))
-                        (else val1))))
-       (and val1 (vector-set! basekey-v kcode val1))
-       (and val2 (vector-set! shftkey-v kcode val2))))
+                        (else #f))))
+       (and val1
+            (vector-set! basekey-v (- kcode 8) val1))
+       (and val2
+            (vector-set! shftkey-v (- kcode 8) val2))))
    ;; symbol-stmt => "modifier_map" '$word "{" ksym-list "}"
    (lambda ($5 $4 $3 $2 $1 . $rest) $1)
    ;; keysym-detail => "[" symbol-list "]"

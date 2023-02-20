@@ -84,7 +84,10 @@ exec $GDB_PFX guile $0 "$@"
 (use-modules (fibers conditions))
 (use-modules (fibers channels))
 
+(use-modules (ice-9 format))
 (use-modules (ice-9 pretty-print))
+(define (fferr fmt . args)
+  (apply format (current-error-port) fmt args))
 (define (sferr fmt . args)
   (apply simple-format (current-error-port) fmt args)
   (force-output (current-error-port)))
@@ -268,7 +271,8 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; ====================================
 
-(define rq-chan #f)                     ; channel for issuing requests
+(define rq-chan #f)                     ; channel for requests to sender
+(define ev-chan #f)                     ; channel for events to model
 (define rq-iobuf #f)
 (define ev-iobuf #f)
 
@@ -446,32 +450,95 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; --- wl_keyboard
 
-(define kbd-keymap #f)
+;; modifiers:
+;;   none = 0
+;;   shift = 1
 
+;; emacs-key: shift control meta alt hyper super
+;;     mouse: click drag down
+
+(define kbd-base-v #f)
+(define kbd-shft-v #f)
+(define kbd-mods 0)
+
+(define (set-mod key)
+  (case key
+    ((S-) (set! kbd-mods (logior kbd-mods #x1000000))) ;; 2^25, shift
+    ((C-) (set! kbd-mods (logior kbd-mods #x2000000))) ;; 2^26, control
+    ((M-) (set! kbd-mods (logior kbd-mods #x4000000))) ;; 2^27, meta
+    ((A-) (set! kbd-mods (logior kbd-mods #x0200000))) ;; 2^22, alt
+    ((H-) (set! kbd-mods (logior kbd-mods #x0800000))) ;; 2^24, hyper
+    ((Z-) (set! kbd-mods (logior kbd-mods #x0400000))) ;; 2^23, super
+    (else #f)))
+
+(define (clr-mod key)
+  (case key
+    ((S-) (set! kbd-mods (logand kbd-mods #x6FFFFFF))) ;; 2^25, shift
+    ((C-) (set! kbd-mods (logand kbd-mods #x5FFFFFF))) ;; 2^26, control
+    ((M-) (set! kbd-mods (logand kbd-mods #x3FFFFFF))) ;; 2^27, meta
+    ((A-) (set! kbd-mods (logand kbd-mods #x7DFFFFF))) ;; 2^22, alt
+    ((H-) (set! kbd-mods (logand kbd-mods #x77FFFFF))) ;; 2^24, hyper
+    ((Z-) (set! kbd-mods (logand kbd-mods #x7BFFFFF))) ;; 2^23, super
+    (else #f)))
+
+(define mod-syms '(alt super hyper shift control meta))
+
+(define (uncap-mods mods)
+  (logand mods #x6FFFFFF))
+
+;; #\b #\B =>
+;;    (control #\b) on control+b 
+;;    (#\B) on shift+b 
+(define (encase/mods base shft)
+  (define (doit ksym mods)
+    (let loop ((seq (list ksym)) (mask #x0200000) (syms mod-syms))
+      (if (null? syms) seq
+          (loop (if (positive? (logand mask mods)) (cons (car syms) seq) seq)
+                (* 2 mask) (cdr syms)))))
+  (if (and (char? base) shft (positive? (logand kbd-mods #x1000000)))
+      (doit shft (uncap-mods kbd-mods))
+      (doit base kbd-mods)))
+      
 (define-wl-request wl_keyboard release)
 
 (define (handle-wl_keyboard:keymap obj-id format fd size)
-  (sferr "got keymap obj ~A format ~A fd ~A size ~A\n" obj-id format fd size)
-  (sferr "\n    try (kbd-read kbd-keymap)\n\n")
+  ;;(sferr "got keymap obj ~A format ~A fd ~A size ~A\n" obj-id format fd size)
+  ;; ASSUME format is xkb
+  ;;
   (let* ((size (1- size)) ;; trim trailing nul
-         (mem (mmap 0 size PROT_READ MAP_PRIVATE fd 0)))
-    (set! kbd-keymap (string-copy (utf8->string mem)))
+         (mem (mmap 0 size PROT_READ MAP_PRIVATE fd 0))
+         (kmpair (get-keymaps (utf8->string mem))))
+    (set! kbd-base-v (car kmpair))
+    (set! kbd-shft-v (cdr kmpair))
     (close-fdes fd))
   (if #f #f))
 
 (define (handle-wl_keyboard:enter obj-id serial surface keys)
+  ;; modifiers coming ...
+  (sferr "kb enter, keys = ~S\n" keys)
   (if #f #f))
 
 (define (handle-wl_keyboard:leave obj-id serial surface)
   (if #f #f))
 
 (define (handle-wl_keyboard:key obj-id serial time key state)
-  (sferr "key: ~S ~A\n" key (if (zero? state) "released" "pressed"))
-  (if (= key 28) (doit))
-  (if #f #f))
+  ;;(fferr "mods: ~x\n" kbd-mods)
+  (let ((base (vector-ref kbd-base-v key))
+        (shft (vector-ref kbd-shft-v key)))
+    (if (zero? state)
+        (or (and (symbol? base) (clr-mod base))
+            (put-message ev-chan (encase/mods base shft)))
+        (or (and (symbol? base) (set-mod base))))
+    ;;(sferr "key ~A: ~S => ~S, ~A\n"(if (zero? state) "rel" "prs") key base)
+    ;;(if (= key 28) (doit))
+    (if #f #f)))
 
-(define (handle-wl_keyboard:modifiers obj-id serial mods_depressed mods_latched
-                                       mods_locked group)
+(define (handle-wl_keyboard:modifiers obj-id serial
+                                      mods_depressed mods_latched mods_locked
+                                      group)
+  (unless (and (zero? mods_depressed) (zero? mods_latched))
+    (sferr "modifiers: prsd=~S lchd=~S grp=~S\n"
+           mods_depressed mods_latched group))
   (if #f #f))
 
 (define (handle-wl_keyboard:repeat_info obj-id rate delay)
@@ -741,6 +808,19 @@ exec $GDB_PFX guile $0 "$@"
        (else
         (loop (- n-have msg-size) #f 8 opcode #f)))))))
 
+(define (model)
+  (sferr "model starting ...\n")
+  (let loop ((evq '()))
+    (cond
+     ((get-message ev-chan) =>
+      (lambda (evt)
+        (sferr "M: queue evt ~S\n" evt)
+        ;;(loop (cons evt evq))
+        (loop evq)
+        ))
+     (else
+      (sferr "model says wtf\n")))))
+
 (define (monitor)
   (sferr "monitor starting ...\n")
   (let* ((server (spawn-coop-repl-server)))
@@ -778,6 +858,10 @@ exec $GDB_PFX guile $0 "$@"
            (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
      (set! appl-kbd-id
            (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
+
+     (set! ev-chan (make-channel))
+     (sync-and-wait)
+     (spawn-fiber model)
 
      (sync-and-wait)
      (spawn-fiber monitor)
