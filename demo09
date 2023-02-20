@@ -519,6 +519,7 @@ exec $GDB_PFX guile $0 "$@"
   (if #f #f))
 
 (define (handle-wl_keyboard:leave obj-id serial surface)
+  (sferr "kb leave~S\n")
   (if #f #f))
 
 (define (handle-wl_keyboard:key obj-id serial time key state)
@@ -537,7 +538,7 @@ exec $GDB_PFX guile $0 "$@"
                                       mods_depressed mods_latched mods_locked
                                       group)
   (unless (and (zero? mods_depressed) (zero? mods_latched))
-    (sferr "modifiers: prsd=~S lchd=~S grp=~S\n"
+    (fferr "modifiers: prsd=0x~x lchd=0x~x grp=~s\n"
            mods_depressed mods_latched group))
   (if #f #f))
 
@@ -850,10 +851,6 @@ exec $GDB_PFX guile $0 "$@"
      (sync-and-wait)
      (init-globals)
      (sync-and-wait)
-     ;;(set! appl-ptr-id (gen-id-using (wl_seat:get_pointer seat-id <>)))
-     ;;(set-object! appl-ptr-id 'wl_pointer appl-ctx) 
-     ;;(set! appl-kbd-id (gen-id-using (wl_seat:get_keyboard seat-id <>)))
-     ;;(set-object! appl-kbd-id 'wl_keyboard appl-ctx)
      (set! appl-ptr-id
            (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
      (set! appl-kbd-id
@@ -871,7 +868,7 @@ exec $GDB_PFX guile $0 "$@"
      (create-it)
      (if (> (length (program-arguments)) 1)
          (wait done-cond)
-         (fsleep 4.0))
+         (fsleep 20.0))
      (force-output (current-error-port))
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))

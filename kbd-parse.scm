@@ -1,4 +1,5 @@
 ;; kbd-parse.scm
+
 ;; Copyright (C) 2023 Matthew Wette
 ;;
 ;; This library is free software; you can redistribute it and/or
@@ -193,26 +194,24 @@
     (throw 'kbd-error "~A:~A: parse failed at state ~A, on input ~S"
 	   fn ln (car state) (cdr laval))))
 
+(define $default 1)
+
 (define* (parse-kbd #:key debug)
-  (define $default 1)
-  
   (let loop ((state (list 0))	; state stack
-	     (stack (list '$@))	; semantic value stack
-	     (nval #f)		; non-terminal from prev reduction
-	     (lval #f))		; lexical value (from lex'r)
+	     (value (list '$@))	; value stack
+	     (nval #f)		; from reduce
+	     (lval #f))		; from lex'er
     (cond
      ((not (or nval lval))
       (if (eqv? $default (caar (vector-ref pat-v (car state))))
-	  (loop state stack (cons $default #f) lval)
-	  (loop state stack nval (kbd-read))))
+	  (loop state value (cons $default #f) lval)
+	  (loop state value nval (kbd-read))))
      (else
       (let* ((laval (or nval lval))
 	     (tval (car laval))
 	     (sval (cdr laval))
 	     (stxl (vector-ref pat-v (car state)))
-	     (stx (or (assq-ref stxl tval)
-		      (assq-ref stxl $default)
-		      #f)))
+	     (stx (or (assq-ref stxl tval) (assq-ref stxl $default) #f)))
 	(if debug (dmsg (car state) (if nval tval sval) stx ntab))
 	(cond
 	 ((eq? #f stx)                  ; error
@@ -220,13 +219,13 @@
 	 ((negative? stx)		; reduce
 	  (let* ((gx (abs stx))
 		 (gl (vector-ref len-v gx))
-		 ($$ (apply (vector-ref act-v gx) stack))
+		 ($$ (apply (vector-ref act-v gx) value))
 		 (tval (cons (vector-ref rto-v gx) $$)))
-	    (loop (list-tail state gl) (list-tail stack gl) tval lval)))
+	    (loop (list-tail state gl) (list-tail value gl) tval lval)))
 	 ((positive? stx)		; shift
-	  (loop (cons stx state) (cons sval stack) #f (if nval lval #f)))
+	  (loop (cons stx state) (cons sval value) #f (if nval lval #f)))
 	 (else                          ; accept
-	  (car stack))))))))
+	  (car value))))))))
 
 (define-public (get-keymaps km-str)
   (with-input-from-string km-str parse-kbd)
