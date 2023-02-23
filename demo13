@@ -554,7 +554,7 @@ exec $GDB_PFX guile $0 "$@"
         (or (and (symbol? base) (clr-mod base))
             (put-message ev-chan (encase/mods base shft)))
         (or (and (symbol? base) (set-mod base))))
-    (if (equal? base #\return) (doit))
+    (if (and (positive? state) (equal? base #\return)) (doit))
     ;;(sferr "key ~A: ~S => ~S, ~A\n"(if (zero? state) "rel" "prs") key base)
     (if #f #f)))
 
