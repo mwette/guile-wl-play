@@ -47,10 +47,8 @@
     (keycode-stmt
      ("minimum" "=" $fixed ($$ '()))
      ("maximum" "=" $fixed
-      ($$
-       (set! basekey-v (make-vector (1+ (fxd->num $3))))
-       (set! shftkey-v (make-vector (1+ (fxd->num $3))))
-       ))
+      ($$ (set! basekey-v (make-vector (1+ (fxd->num $3)) #f))
+          (set! shftkey-v (make-vector (1+ (fxd->num $3)) #f))))
      ($keysym "=" $fixed
       ($$ (hash-set! kbd-coded $1 (fxd->num $3)) #f))
      ("indicator" $fixed "=" $string)
