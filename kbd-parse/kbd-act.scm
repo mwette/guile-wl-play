@@ -25,9 +25,9 @@
    ;; keycode-stmt => "maximum" "=" '$fixed
    (lambda ($3 $2 $1 . $rest)
      (set! basekey-v
-       (make-vector (#{1+}# (fxd->num $3))))
+       (make-vector (#{1+}# (fxd->num $3)) #f))
      (set! shftkey-v
-       (make-vector (#{1+}# (fxd->num $3)))))
+       (make-vector (#{1+}# (fxd->num $3)) #f)))
    ;; keycode-stmt => '$keysym "=" '$fixed
    (lambda ($3 $2 $1 . $rest)
      (hash-set! kbd-coded $1 (fxd->num $3))

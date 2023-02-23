@@ -22,3 +22,17 @@ demo08		adding more structure, scrolled update
 
 V0.10.0		first working release
 V0.11.0		updated scanner, generates enums, added demo08
+
+ 1211384408
+ 1211384385
+ 1211388504
+ 1211388481
+ 808665688
+ 808665665
+ 808669784
+ 808669761
+ 909199186
+ 875709016
+ 875708993
+ 1
+ 0
