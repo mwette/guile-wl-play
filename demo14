@@ -967,30 +967,63 @@ exec $GDB_PFX guile $0 "$@"
     ;;
     (cairo_restore cr)))
 
+(define deg (/ M_PI 180.0))
+
 (define (draw-pane-2 cr wid hei)
-  (let* ((lw 4.0) (lw/2 (/ lw 2)) (bar 40.0))
+  (let* ((lw/2 1.0) (bar 50.0) (rad 20.0))
     (cairo_save cr)
-    (cairo_set_source_rgb cr 0.8 0.8 0.8)
+    ;; clear
+    (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
     (cairo_paint cr)
-    ;;
-    (cairo_set_source_rgb cr 0.0 0.0 1.0)
-    (cairo_set_line_width cr lw)
-    (cairo_move_to cr lw/2 lw/2)
-    (cairo_line_to cr lw/2 (- hei lw/2))
+    ;; bottom
+    (cairo_move_to cr lw/2 bar)
+    (cairo_line_to cr (- wid lw/2) bar)
     (cairo_line_to cr (- wid lw/2) (- hei lw/2))
-    (cairo_line_to cr (- wid lw/2) lw/2)
+    (cairo_line_to cr lw/2 (- hei lw/2))
     (cairo_close_path cr)
+    (cairo_set_source_rgba cr 0.8 0.8 0.8 1.0)
+    (cairo_fill_preserve cr)
+    (cairo_set_line_width cr (* 2 lw/2))
+    (cairo_set_source_rgb cr 0.1 0.1 0.1)
     (cairo_stroke cr)
-    ;;
-    (cairo_move_to cr 0.0 bar)
-    (cairo_line_to cr wid bar)
+    ;; top
+    (cairo_move_to cr lw/2 bar)
+    (cairo_line_to cr lw/2 (+ rad lw/2))
+    (cairo_arc cr (+ rad lw/2) (+ rad lw/2) rad (* -180.0 deg) (* -90.0 deg))
+    (cairo_line_to cr (- wid rad lw/2) lw/2)
+    (cairo_arc cr (- wid rad lw/2) (+ rad lw/2) rad (* -90.0 deg) (* 0.0 deg))
+    (cairo_line_to cr (- wid lw/2) bar)
+    (cairo_close_path cr)
+    (cairo_set_source_rgb cr 0.6 0.6 0.6)
+    (cairo_fill_preserve cr)
+    (cairo_set_line_width cr (* 2 lw/2))
+    (cairo_set_source_rgb cr 0.1 0.1 0.1)
     (cairo_stroke cr)
-    (cairo_set_source_rgb cr 0.4 0.4 0.4)
-    (cairo_fill cr)
+    ;; text
+    (let* ((title "geemacs")
+           (face "serif")
+           (slant 'CAIRO_FONT_SLANT_NORMAL)
+           (weight 'CAIRO_FONT_WEIGHT_NORMAL)
+           (ftsize 20.0)
+           (extents (make-cairo_text_extents_t))
+           (wid/2 (/ wid 2.0))
+           (bar/2 (/ bar 2.0))
+           )
+      (cairo_select_font_face cr face slant weight)
+      (cairo_set_font_size cr ftsize)
+      (cairo_text_extents cr title (pointer-to extents))
+      ;; bearing is vector from start of text on baseline
+      ;; to upper left corner of bounding box
+      (cairo_move_to cr
+                     (+ wid/2 (fh-object-ref extents 'x_bearing)
+                        (- (/ (fh-object-ref extents 'width) 2.0)))
+                     (+ bar/2
+                        (/ (fh-object-ref extents 'height) 2.0)))
+      (cairo_show_text cr title))
     ;;
     (cairo_restore cr)))
 
-(define draw-pane draw-pane-1)
+(define draw-pane draw-pane-2)
 
 (define (init-cr-txt cr)
   (let ((face "monospace")
@@ -1103,7 +1136,7 @@ exec $GDB_PFX guile $0 "$@"
                          (- 300.0 4.0) (- 300.0 base-y txhei))
         (cairo_fill cr)
         (cairo_restore cr)))
-    (when #t
+    (when #f
       (let ()
         (cairo_save cr)
         ;;
