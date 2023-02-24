@@ -932,45 +932,10 @@ exec $GDB_PFX guile $0 "$@"
 
 (define gran #x100000)                  ; bufsize granularity
 
-(define (draw-pane-1 cr wid hei)
-  (let* ((lw/2 1.0) (bar 50.0)
-         (rad 40.0) (wmr (- wid rad)) (hmr (- hei rad)))
-    (cairo_save cr)
-    ;; clear
-    (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
-    (cairo_paint cr)
-    ;; bottom
-    (cairo_move_to cr lw/2 bar)
-    (cairo_line_to cr (- wid lw/2) bar)
-    (cairo_line_to cr (- wid lw/2) (- hei lw/2))
-    (cairo_line_to cr lw/2 (- hei lw/2))
-    (cairo_close_path cr)
-    (cairo_set_source_rgba cr 0.8 0.8 0.8 1.0)
-    (cairo_fill_preserve cr)
-    (cairo_set_line_width cr (* 2 lw/2))
-    (cairo_set_source_rgb cr 0.1 0.1 0.1)
-    (cairo_stroke cr)
-    ;; top
-    (cairo_move_to cr lw/2 bar)
-    (cairo_line_to cr lw/2 (+ rad lw/2))
-    (cairo_curve_to cr lw/2 lw/2 lw/2 lw/2 (+ rad lw/2) lw/2)
-    (cairo_line_to cr (- wid rad lw/2) lw/2)
-    (cairo_curve_to cr (- wid lw/2) lw/2 (- wid lw/2) lw/2
-                    (- wid lw/2) (+ rad lw/2))
-    (cairo_line_to cr (- wid lw/2) bar)
-    (cairo_close_path cr)
-    (cairo_set_source_rgb cr 0.6 0.6 0.6)
-    (cairo_fill_preserve cr)
-    (cairo_set_line_width cr (* 2 lw/2))
-    (cairo_set_source_rgb cr 0.1 0.1 0.1)
-    (cairo_stroke cr)
-    ;;
-    (cairo_restore cr)))
-
 (define deg (/ M_PI 180.0))
 
-(define (draw-pane-2 cr wid hei)
-  (let* ((lw/2 1.0) (bar 50.0) (rad 20.0))
+(define (draw-pane-1 cr wid hei)
+  (let* ((lw/2 1.0) (bar 44.0) (rad 16.0))
     (cairo_save cr)
     ;; clear
     (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
@@ -1023,7 +988,7 @@ exec $GDB_PFX guile $0 "$@"
     ;;
     (cairo_restore cr)))
 
-(define draw-pane draw-pane-2)
+(define draw-pane draw-pane-1)
 
 (define (init-cr-txt cr)
   (let ((face "monospace")
