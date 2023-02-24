@@ -60,9 +60,17 @@ exec $GDB_PFX guile $0 "$@"
 ;;  1 add a layer somehow so callers don't need to pass rq-iobuf 0
 ;;    need a way to block the sender until a number of messages have
 ;;    built up
-;;  2 figure out how to really use kernel polling so we don't need
+;;  2 figure out how to really use polling so we don't need
 ;;    to call sleep or watch guile run at 100% all the time
-;;  3 add sync mech: send sync, wait for done
+;;  3 think about add sync / done (see sync-and-wait)
+;;  5 think about context and how we update
+;;    keyboard, pointer, buffer
+;;    a) maybe dispatch generates an event stream
+;;       event stream = (event . (
+;;       send to model!
+;;    b) fold state-trans state events
+
+;; DONE
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
@@ -150,6 +158,11 @@ exec $GDB_PFX guile $0 "$@"
 
 (define (set-object-value! obj-id obj-value)
   (vector-set! object-value-vec obj-id obj-value))
+
+(define (doc-str obj-id opcode)
+  (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
+         (decoder (and dec-vec (vector-ref dec-vec opcode))))
+    (and (procedure? decoder) (procedure-documentation decoder))))
 
 ;; set-event-handler! 'wl_displaly 'get_registry proc => prev-proc
 (define (set-event-handler! interface event proc)
@@ -444,34 +457,46 @@ exec $GDB_PFX guile $0 "$@"
  
 ;; --- wl_pointer
 
+;; on my laptop see lots of (motion,frame) sequences
+;; only get these events when pointer is in window
+
 (define-wl-request wl_pointer set_cursor serial surface hotspot_x hotspot_y)
 (define-wl-request wl_pointer release)
 
 (define (handle-wl_pointer:enter obj-id serial surface surface_x surface_y)
+  (sferr "pointer:enter\n")
   (if #f #f))
 
 (define (handle-wl_pointer:leave obj-id serial surface)
+  (sferr "pointer:leave\n")
   (if #f #f))
 
 (define (handle-wl_pointer:motion obj-id time surface_x surface_y)
+  (sferr "pointer:motion\n")
   (if #f #f))
 
 (define (handle-wl_pointer:button obj-id serial time button state)
+  (sferr "pointer:button\n")
   (if #f #f))
 
 (define (handle-wl_pointer:axis obj-id time axis value)
+  (sferr "pointer:axis\n")
   (if #f #f))
 
 (define (handle-wl_pointer:frame obj-id)
+  ;;(sferr "pointer:frame\n")
   (if #f #f))
 
 (define (handle-wl_pointer:axis_source obj-id axis_source)
+  (sferr "pointer:axis_source\n")
   (if #f #f))
 
 (define (handle-wl_pointer:axis_stop obj-id time axis)
+  (sferr "pointer:axis_stop\n")
   (if #f #f))
 
 (define (handle-wl_pointer:axis_discrete obj-id axis discrete)
+   (sferr "pointer:axis_discrete\n")
   (if #f #f))
 
 ;; --- wl_keyboard
@@ -557,7 +582,7 @@ exec $GDB_PFX guile $0 "$@"
         (or (and (symbol? base) (clr-mod base))
             (put-message ev-chan (encase/mods base shft)))
         (or (and (symbol? base) (set-mod base))))
-    (if (and (positive? state) (equal? base #\return)) (doit))
+    ;;(if (and (positive? state) (equal? base #\return)) (doit))
     ;;(sferr "key ~A: ~S => ~S, ~A\n"(if (zero? state) "rel" "prs") key base)
     (if #f #f)))
 
@@ -809,11 +834,6 @@ exec $GDB_PFX guile $0 "$@"
      (else
       (sferr "sender says wtf\n")))))
 
-(define (doc-str obj-id opcode)
-  (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
-         (decoder (and dec-vec (vector-ref dec-vec opcode))))
-    (and (procedure? decoder) (procedure-documentation decoder))))
-
 (define (receiver)
   (sferr "receiver starting ...\n")
   (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
@@ -842,19 +862,6 @@ exec $GDB_PFX guile $0 "$@"
        (else
         (loop (- n-have msg-size) #f 8 opcode #f)))))))
 
-(define (model)
-  (sferr "model starting ...\n")
-  (let loop ((evq '()))
-    (cond
-     ((get-message ev-chan) =>
-      (lambda (evt)
-        (sferr "M: queue evt ~S\n" evt)
-        ;;(loop (cons evt evq))
-        (loop evq)
-        ))
-     (else
-      (sferr "model says wtf\n")))))
-
 (define (monitor)
   (sferr "monitor starting ...\n")
   (let* ((server (spawn-coop-repl-server)))
@@ -869,46 +876,6 @@ exec $GDB_PFX guile $0 "$@"
 (define (done)
   (and done-cond (signal-condition! done-cond)))
 
-(define (appl-main)
-  (run-fibers
-   (lambda ()
-     (set! wl-sock (connect-display))
-     (set! done-cond (make-condition))
-     (set! rq-chan (make-channel))
-     (install-handlers)
-     (init-object-pool)
-     ;;
-     (spawn-fiber receiver)
-     (spawn-fiber sender)
-     (get-registry)
-     (sync-and-wait)
-     (init-globals)
-     (sync-and-wait)
-     (set! appl-ptr-id
-           (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
-     (set! appl-kbd-id
-           (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
-
-     (set! ev-chan (make-channel))
-     (sync-and-wait)
-     (spawn-fiber model)
-
-     (sync-and-wait)
-     (spawn-fiber monitor)
-     (fsleep 0.1)
-     (sferr "\n    telnet localhost 37146\n\n")
-     ;;
-     (create-it)
-     (if (> (length (program-arguments)) 1)
-         (wait done-cond)
-         (fsleep 10.0))
-     (force-output (current-error-port))
-     (when #f
-       (let* ((rd (map (lambda (p) (cons (cdr p) (car p))) wl_shm:format-enum))
-              (fx (map (lambda (f) (assq-ref rd f)) formats)))
-         (pperr fx)))
-     (close-port wl-sock))
-   #:hz 0 #:install-suspendable-ports? #f))
 
 
 ;; === appl ===========================
@@ -1075,12 +1042,11 @@ exec $GDB_PFX guile $0 "$@"
 (define lbr-bw 2.0)                   ; left/bottom/right border width
 (define tx-pad 4.0)
 
-(define (doit)
-  (let ((ctx appl-ctx))
-    (ctx-changed! ctx)
-    (wl_surface:damage_buffer (ctx-srf-id ctx) 0 0 500 300)
-    (xrf-config ctx)
-    #f))
+(define (doit ctx)
+  (ctx-changed! ctx)
+  (wl_surface:damage_buffer (ctx-srf-id ctx) 0 0 500 300)
+  (xrf-config ctx)
+  ctx)
 
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
@@ -1133,12 +1099,11 @@ exec $GDB_PFX guile $0 "$@"
     (if #f #f)))
 
 ;; read xdg_surface description in xdg-shell.xml
-(define (create-it)
-  (let* ((width 500) (height 300) (format 'argb8888)
-         (ctx (appl-init width height format))
+(define (create-it ctx)
+  (let* ((width (ctx-width ctx))
+         (height (ctx-height ctx))
          (top-id (ctx-top-id ctx))
          (srf-id (ctx-srf-id ctx)))
-    (set! appl-ctx ctx)
     (set! io-debug #f)
     (xdg_toplevel:set_title top-id "wl-play")
     (xdg_toplevel:set_max_size top-id width height)
@@ -1178,6 +1143,73 @@ exec $GDB_PFX guile $0 "$@"
           ;; wait for release?
           (ctx-committed! ctx)))
     (wl_surface:commit srf-id)))
+
+(define (model)
+  (sferr "model starting ...\n")
+  (let loop ((ctx appl-ctx)             ; context
+             (evq '()))                 ; event queue
+    (cond
+     ((pair? evq)
+      (cond
+       ((eqv? (caar evq) #\return)
+        (loop (doit ctx) (cdr evq)))
+       
+       (else
+        ;; missed event
+        (loop ctx (cdr evq)))))
+      
+     ((get-message ev-chan) =>
+      (lambda (evt)
+        (loop ctx (cons evt evq))))
+     (else
+      (sferr "model says wtf\n")))))
+
+
+
+(define (appl-main)
+  (run-fibers
+   (lambda ()
+     (set! wl-sock (connect-display))
+     (set! rq-chan (make-channel))
+     (set! ev-chan (make-channel))
+     (set! done-cond (make-condition))
+
+     (install-handlers)
+     (init-object-pool)
+     (spawn-fiber receiver)
+     (spawn-fiber sender)
+     ;;
+     (get-registry)
+     (sync-and-wait)
+     (init-globals)
+     (sync-and-wait)
+     ;;
+     (let* ((width 500) (height 300) (format 'argb8888)
+            (ctx (appl-init width height format)))
+       (set! appl-ctx ctx)
+       (create-it ctx)
+       )
+     (spawn-fiber model)
+     (set! appl-ptr-id
+           (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
+     (set! appl-kbd-id
+           (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
+     ;;
+     (sync-and-wait)
+     (spawn-fiber monitor)
+     (fsleep 0.1)
+     (sferr "\n    telnet localhost 37146\n\n")
+     ;;
+     (if (> (length (program-arguments)) 1)
+         (wait done-cond)
+         (fsleep 10.0))
+     (force-output (current-error-port))
+     (when #f
+       (let* ((rd (map (lambda (p) (cons (cdr p) (car p))) wl_shm:format-enum))
+              (fx (map (lambda (f) (assq-ref rd f)) formats)))
+         (pperr fx)))
+     (close-port wl-sock))
+   #:hz 0 #:install-suspendable-ports? #f))
 
 (appl-main)
 
