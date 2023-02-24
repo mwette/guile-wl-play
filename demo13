@@ -972,18 +972,19 @@ exec $GDB_PFX guile $0 "$@"
     ;;
     (cairo_set_source_rgb cr 0.0 0.0 1.0)
     (cairo_set_line_width cr lw)
-    (cairo_move_to cr lw/2 0.0)
+    (cairo_move_to cr lw/2 lw/2)
     (cairo_line_to cr lw/2 (- hei lw/2))
     (cairo_line_to cr (- wid lw/2) (- hei lw/2))
-    (cairo_line_to cr (- wid lw/2) 0.0)
+    (cairo_line_to cr (- wid lw/2) lw/2)
     (cairo_close_path cr)
     (cairo_stroke cr)
-    ;;(cairo_set_line_width cr 20.0)
+    ;;
     (cairo_move_to cr 0.0 bar)
     (cairo_line_to cr wid bar)
     (cairo_stroke cr)
     (cairo_set_source_rgb cr 0.4 0.4 0.4)
     (cairo_fill cr)
+    ;;
     (cairo_restore cr)))
 
 (define draw-pane draw-pane-2)
@@ -1102,6 +1103,7 @@ exec $GDB_PFX guile $0 "$@"
     (when #t
       (let ()
         (cairo_save cr)
+        ;;
         (cairo_set_source_rgb cr 0.5 0.0 0.0)
         (cairo_move_to cr 100.0 100.0)
         (cairo_line_to cr 200.0 100.0)
@@ -1109,7 +1111,19 @@ exec $GDB_PFX guile $0 "$@"
         (cairo_line_to cr 100.0 150.0)
         (cairo_close_path cr)
         (cairo_fill cr)
-        (cairo_stroke cr)))
+        (cairo_stroke cr)
+        ;;
+        ;;(cairo_set_source_rgb cr 0.0 0.5 0.0)
+        (cairo_set_source_rgba cr 0.0 0.5 0.0 0.5)
+        (cairo_move_to cr 125.0 125.0)
+        (cairo_line_to cr 225.0 125.0)
+        (cairo_line_to cr 225.0 175.0)
+        (cairo_line_to cr 125.0 175.0)
+        (cairo_close_path cr)
+        (cairo_fill cr)
+        (cairo_stroke cr)
+        ;;
+        (cairo_restore cr)))
     
     ;; write text
     (cairo_set_source_rgb cr 0.0 0.0 0.0)
