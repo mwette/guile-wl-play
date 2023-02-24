@@ -3,9 +3,10 @@
 #|
 # demo13 - wayland client in fibers, targeted for V0.13.0
 # usage:
+#   $ ./demo13
+#     ^ runs for 10 seconds : hit Return key to see different text
 #   $ ./demo13 1
 #   $ telnet localhost 37146
-#   scheme@(guile-user)> (tryit)
 #   scheme@(guile-user)> (done)
 
 TOP=`pwd`
