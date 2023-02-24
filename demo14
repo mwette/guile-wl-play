@@ -252,7 +252,7 @@ exec $GDB_PFX guile $0 "$@"
 ;; ro-wo dpy-ix drw-x dpy-cr drw-cr    <bufr>
 ;; ro-ws ft-asc ft-dsc ft-hei ft-wid   <font>
 ;; ro-wn smp-id srf-id 
-;; rs-wn xrf-id top-id
+;; rs-wn xrf-id top-id *seat-id*
 ;; ro-ws width height format  
 ;; rs-wn port
 
@@ -269,6 +269,7 @@ exec $GDB_PFX guile $0 "$@"
  (define-record-type 
 |#
 
+(display "add seat-id\n")
 (define-record-type <ctx>
   (%make-ctx changed
              port width height format
@@ -460,6 +461,10 @@ exec $GDB_PFX guile $0 "$@"
 ;; on my laptop see lots of (motion,frame) sequences
 ;; only get these events when pointer is in window
 
+(define mouse-x 0)
+(define mouse-y 0)
+(define mouse-b 0)
+
 (define-wl-request wl_pointer set_cursor serial surface hotspot_x hotspot_y)
 (define-wl-request wl_pointer release)
 
@@ -471,12 +476,19 @@ exec $GDB_PFX guile $0 "$@"
   (sferr "pointer:leave\n")
   (if #f #f))
 
+(display "motion will be scaled down by factor of 250\n")
+;; ^ This seems undocumented and not something to be retrived from
+;;   the compositor.  I wonder if we should just set it. ??
 (define (handle-wl_pointer:motion obj-id time surface_x surface_y)
-  (sferr "pointer:motion\n")
+  ;;(sferr "pointer:motion\n")
+  (set! mouse-x (quotient surface_x 250))
+  (set! mouse-y (quotient surface_y 250))
+  ;;(put-message ev-chan `(motion ,mouse-x ,mouse-y))
   (if #f #f))
 
 (define (handle-wl_pointer:button obj-id serial time button state)
-  (sferr "pointer:button\n")
+  ;;(sferr "pointer:button ~S ~S\n" button state)
+  (put-message ev-chan (vector 'click mouse-x mouse-y))
   (if #f #f))
 
 (define (handle-wl_pointer:axis obj-id time axis value)
@@ -544,7 +556,7 @@ exec $GDB_PFX guile $0 "$@"
 (define (encase/mods base shft)
   (define (doit ksym mods)
     (let loop ((seq (list ksym)) (mask #x0200000) (syms mod-syms))
-      (if (null? syms) seq
+      (if (null? syms) (list->vector seq)
           (loop (if (positive? (logand mask mods)) (cons (car syms) seq) seq)
                 (* 2 mask) (cdr syms)))))
   (if (and (char? base) shft (positive? (logand kbd-mods #x1000000)))
@@ -576,8 +588,8 @@ exec $GDB_PFX guile $0 "$@"
 
 (define (handle-wl_keyboard:key obj-id serial time key state)
   ;;(fferr "mods: ~x\n" kbd-mods)
-  (let ((base (vector-ref kbd-base-v key))
-        (shft (vector-ref kbd-shft-v key)))
+  (let ((base (or (vector-ref kbd-base-v key) key))
+        (shft (or (vector-ref kbd-shft-v key) key)))
     (if (zero? state)
         (or (and (symbol? base) (clr-mod base))
             (put-message ev-chan (encase/mods base shft)))
@@ -913,7 +925,7 @@ exec $GDB_PFX guile $0 "$@"
     (cairo_line_to cr (- wid lw/2) (- hei lw/2))
     (cairo_line_to cr lw/2 (- hei lw/2))
     (cairo_close_path cr)
-    (cairo_set_source_rgba cr 0.8 0.8 0.8 1.0)
+    (cairo_set_source_rgb cr 0.9 0.9 0.9)
     (cairo_fill_preserve cr)
     (cairo_set_line_width cr (* 2 lw/2))
     (cairo_set_source_rgb cr 0.1 0.1 0.1)
@@ -1067,30 +1079,6 @@ exec $GDB_PFX guile $0 "$@"
                          (- 300.0 4.0) (- 300.0 base-y txhei))
         (cairo_fill cr)
         (cairo_restore cr)))
-    (when #f
-      (let ()
-        (cairo_save cr)
-        ;;
-        (cairo_set_source_rgb cr 0.5 0.0 0.0)
-        (cairo_move_to cr 100.0 100.0)
-        (cairo_line_to cr 200.0 100.0)
-        (cairo_line_to cr 200.0 150.0)
-        (cairo_line_to cr 100.0 150.0)
-        (cairo_close_path cr)
-        (cairo_fill cr)
-        (cairo_stroke cr)
-        ;;
-        ;;(cairo_set_source_rgb cr 0.0 0.5 0.0)
-        (cairo_set_source_rgba cr 0.0 0.5 0.0 0.5)
-        (cairo_move_to cr 125.0 125.0)
-        (cairo_line_to cr 225.0 125.0)
-        (cairo_line_to cr 225.0 175.0)
-        (cairo_line_to cr 125.0 175.0)
-        (cairo_close_path cr)
-        (cairo_fill cr)
-        (cairo_stroke cr)
-        ;;
-        (cairo_restore cr)))
     
     ;; write text
     (cairo_set_source_rgb cr 0.0 0.0 0.0)
@@ -1150,21 +1138,26 @@ exec $GDB_PFX guile $0 "$@"
              (evq '()))                 ; event queue
     (cond
      ((pair? evq)
-      (cond
-       ((eqv? (caar evq) #\return)
-        (loop (doit ctx) (cdr evq)))
-       
-       (else
-        ;; missed event
-        (loop ctx (cdr evq)))))
+      (let* ((ev (car evq)) (type (vector-ref ev 0)))
+        (cond
+         ((eq? type #\return)
+          (loop (doit ctx) (cdr evq)))
+         ((eq? type 'click)
+          (sferr "clicked at ~S ~S\n" (vector-ref ev 1) (vector-ref ev 2))
+          (when (< (vector-ref ev 2) 40)
+            (sferr "starting move ...\n")
+            (xdg_toplevel:move (ctx-top-id ctx) seat-id 0))
+          (loop ctx (cdr evq)))
+         
+         (else
+          (sferr "ev: ~S\n" ev)
+          (loop ctx (cdr evq))))))
       
      ((get-message ev-chan) =>
       (lambda (evt)
         (loop ctx (cons evt evq))))
      (else
       (sferr "model says wtf\n")))))
-
-
 
 (define (appl-main)
   (run-fibers
@@ -1188,12 +1181,12 @@ exec $GDB_PFX guile $0 "$@"
             (ctx (appl-init width height format)))
        (set! appl-ctx ctx)
        (create-it ctx)
+       (set! appl-ptr-id                ; not sure this is needed
+             (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
+       (set! appl-kbd-id                ; not sure this is needed
+             (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
        )
      (spawn-fiber model)
-     (set! appl-ptr-id
-           (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
-     (set! appl-kbd-id
-           (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
      ;;
      (sync-and-wait)
      (spawn-fiber monitor)
