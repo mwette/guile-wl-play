@@ -272,7 +272,8 @@ exec $GDB_PFX guile $0 "$@"
 (display "add seat-id\n")
 (define-record-type <ctx>
   (%make-ctx changed
-             port width height format
+             port bvec
+             width height format
              smp-id srf-id xrf-id top-id
              dpy-ix drw-ix dpy-cr drw-cr
              ft-asc ft-dsc ft-hei ft-wid)
@@ -297,7 +298,9 @@ exec $GDB_PFX guile $0 "$@"
   (width ctx-width set-ctx-width!)
   (height ctx-height set-ctx-height!)
   (format ctx-format set-ctx-format!)
-  (port ctx-port set-ctx-port!))
+  (port ctx-port)
+  (bvec ctx-bvec)
+  )
 
 (define (make-ctx . args)
   (apply %make-ctx #t args))
@@ -918,9 +921,6 @@ exec $GDB_PFX guile $0 "$@"
 (define (draw-pane-1 cr wid hei)
   (let* ((lw/2 1.0) (bar 44.0) (rad 16.0))
     (cairo_save cr)
-    ;; clear
-    (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
-    (cairo_paint cr)
     ;; bottom
     (cairo_move_to cr lw/2 bar)
     (cairo_line_to cr (- wid lw/2) bar)
@@ -1010,7 +1010,8 @@ exec $GDB_PFX guile $0 "$@"
          (ft-dsc (fh-object-ref extents 'descent))
          (ft-hei (fh-object-ref extents 'height))
          (ft-wid (fh-object-ref extents 'max_x_advance))
-         (ctx (make-ctx port width height format
+         (ctx (make-ctx port bv
+                        width height format
                         smp-id srf-id xrf-id top-id
                         dpy-ix drw-ix dpy-cr drw-cr
                         ft-asc ft-dsc ft-hei ft-wid)))
@@ -1065,20 +1066,20 @@ exec $GDB_PFX guile $0 "$@"
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
   (let* ((cr (ctx-drw-cr ctx))
+         (width (ctx-width ctx))
+         (height (ctx-height ctx))
          (base-x (+ lbr-bw tx-pad))
-         (base-y (- 300.0 lbr-bw tx-pad (ctx-ft-dsc ctx)))
+         (base-y (- height lbr-bw tx-pad (ctx-ft-dsc ctx)))
          (txhei (ctx-ft-hei ctx))
-         (text (get-text))
-         )
-    ;; draw border : looks cheesy
-    (draw-pane cr 500.0 300.0)
+         (text (get-text)))
+    (draw-pane cr width height)
     
     (when #f
       (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))
         (cairo_save cr)
         (cairo_set_source_surface cr dpy-srf 2.0 (- txhei))
         (cairo_rectangle cr 2.0 (- base-y txhei)
-                         (- 300.0 4.0) (- 300.0 base-y txhei))
+                         (- height 4.0) (- 300.0 base-y txhei))
         (cairo_fill cr)
         (cairo_restore cr)))
     
