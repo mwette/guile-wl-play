@@ -74,7 +74,7 @@ exec $GDB_PFX guile $0 "$@"
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
-(define my-mmap mmap)
+(when (not (defined? 'mmap)) (load-extension "mmap" "scm_init_mmap"))
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
@@ -448,8 +448,9 @@ exec $GDB_PFX guile $0 "$@"
 (define (handle-wl_seat:capabilities obj-id capabilities)
   (define (cap? caps key)
     (positive? (logior caps (assq-ref wl_seat:capability-enum key))))
-  (if (not (cap? capabilities 'keyboard)) (sferr "warning: no keyboard"))
-  (if (not (cap? capabilities 'pointer)) (sferr "warning: no pointer"))
+  (if (not (cap? capabilities 'keyboard)) (sferr "warning: no keyboard\n"))
+  (if (not (cap? capabilities 'pointer)) (sferr "warning: no pointer\n"))
+  (if (cap? capabilities 'touch) (sferr "got touch\n"))
   (if #f #f))
  
 (define (handle-wl_seat:name obj-id name)
@@ -900,6 +901,7 @@ exec $GDB_PFX guile $0 "$@"
 (define appl-ctx #f)
 (define appl-kbd-id #f)
 (define appl-ptr-id #f)
+(define appl-tch-id #f)
 
 (define (wl-format->cairo wlf)
   (case wlf
@@ -986,7 +988,7 @@ exec $GDB_PFX guile $0 "$@"
          (bufsize (* gran (quotient (+ (* 2 size) (1- gran)) gran)))
          (port (let ((port (tmpfile))) (truncate-file port bufsize) port))
          (fd (port->fdes port))
-         (bv (my-mmap 0 bufsize (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+         (bv (mmap 0 bufsize (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
          (smp-id (gen-id-using (wl_shm:create_pool shm-id <> fd bufsize)))
          (srf-id (gen-id-using (wl_compositor:create_surface comp-id <>)))
          (xrf-id (gen-id-using (xdg_wm_base:get_xdg_surface base-id <> srf-id)))
@@ -1146,7 +1148,7 @@ exec $GDB_PFX guile $0 "$@"
           (sferr "clicked at ~S ~S\n" (vector-ref ev 1) (vector-ref ev 2))
           (when (< (vector-ref ev 2) 40)
             (sferr "starting move ...\n")
-            (xdg_toplevel:move (ctx-top-id ctx) seat-id 0))
+            (xdg_toplevel:move (ctx-top-id ctx) seat-id 0)) ;; tried 1 4
           (loop ctx (cdr evq)))
          
          (else
@@ -1185,6 +1187,11 @@ exec $GDB_PFX guile $0 "$@"
              (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
        (set! appl-kbd-id                ; not sure this is needed
              (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
+       
+       #|  This instantly crashes the window system:
+       (set! appl-tch-id
+             (add-id 'wl_touch appl-ctx (wl_seat:get_touch seat-id <>)))
+       |#
        )
      (spawn-fiber model)
      ;;
