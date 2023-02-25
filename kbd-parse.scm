@@ -166,6 +166,8 @@
     ("Alt_L" . A-) ("Alt_R" . A-)
     ;;
     ("Caps_Lock" . LCTL)
+    ;;
+    ("Right" . right) ("Left" . left) ("Up" . up) ("Down" . down)
     ))
 
 ;;(define keycode-vec #f)
