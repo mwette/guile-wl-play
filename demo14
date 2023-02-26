@@ -4,10 +4,10 @@
 # demo14 - wayland client in fibers, targeted for V0.14.0
 #
 # usage:
-#   $ ./demo13
+#   $ ./demo14
 #   runs for 10 seconds : hit Return key to see different text
 # or
-#   $ ./demo13 1
+#   $ ./demo14 1
 #   $ telnet localhost 37146
 #   scheme@(guile-user)> (done)
 
@@ -29,6 +29,7 @@ if [ $# -gt 0 ]; then
     esac
 fi
 
+#export PATH=/opt/guile-rel/3.0.8/bin:$PATH
 guild compile -O0 $0
 exec $GDB_PFX guile $0 "$@"
 |#
@@ -57,9 +58,6 @@ exec $GDB_PFX guile $0 "$@"
 ;;    to see them in sequence (so odd)
 
 ;; TODO
-;;  1 add a layer somehow so callers don't need to pass rq-iobuf 0
-;;    need a way to block the sender until a number of messages have
-;;    built up
 ;;  2 figure out how to really use polling so we don't need
 ;;    to call sleep or watch guile run at 100% all the time
 ;;  3 think about add sync / done (see sync-and-wait)
@@ -69,8 +67,12 @@ exec $GDB_PFX guile $0 "$@"
 ;;       event stream = (event . (
 ;;       send to model!
 ;;    b) fold state-trans state events
+;;    c) named-let loop with high-volatility state as args <= in-work
 
 ;; DONE
+;;  1 add a layer somehow so callers don't need to pass rq-iobuf 0
+;;    need a way to block the sender until a number of messages have
+;;    built up
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
@@ -80,8 +82,6 @@ exec $GDB_PFX guile $0 "$@"
 (use-modules (system foreign))
 (use-modules (ice-9 atomic))
 (use-modules (srfi srfi-9))
-
-(define sys-sleep sleep)
 
 (use-modules (wl-client))
 (use-modules (sockmsg))
@@ -105,6 +105,8 @@ exec $GDB_PFX guile $0 "$@"
 (define (pperr exp) (pretty-print exp (current-error-port)))
 
 ;; ============================================================================
+
+(define wl-debug #f)
 
 ;; per-interface vectors of handlers by opcode
 (define my-handler-vec-vec (make-wl-handler-vec-vec))
@@ -133,7 +135,6 @@ exec $GDB_PFX guile $0 "$@"
               (if (vector-ref object-value-vec cur) (alloc-id) (ret cur))
               (loop (atomic-box-ref box))))))))
 
-;; name -> id
 (define globals-dict (make-hash-table 97))
 
 ;; pre-defined object ids
@@ -151,7 +152,7 @@ exec $GDB_PFX guile $0 "$@"
          (if-indx (assq-ref wl-index-dict if-name))
          (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
          (if-handlers (vector-ref my-handler-vec-vec if-indx)))
-    ;;(sferr "~S: ~S\n" obj-id obj-iface)
+    (when wl-debug (sferr "object: ~S is ~S\n" obj-id obj-iface))
     (vector-set! object-decoders-vec ob-indx if-decoders)
     (vector-set! object-handlers-vec ob-indx if-handlers)
     (vector-set! object-value-vec ob-indx obj-value)))
@@ -188,8 +189,6 @@ exec $GDB_PFX guile $0 "$@"
                  (and hlr-vec #t) (and handler #t))))))
 
 ;; ====================================
-
-(define wl-debug #f)
 
 (eval-when (expand load eval)
   (define (gen-id x . args)
@@ -615,6 +614,37 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; --- wl_touch
 
+(define (handle-wl_touch:down obj-id serial time surface id x y)
+  (sferr "touch:down \n")
+  (if #f #f))
+
+(define (handle-wl_touch:up obj-id serial time id)
+  (sferr "touch:up \n")
+  (if #f #f))
+
+(define (handle-wl_touch:motion obj-id time id x y)
+  (sferr "touch:motion \n")
+  (if #f #f))
+
+(define (handle-wl_touch:frame obj-id id x y)
+  (sferr "touch:frame \n")
+  (if #f #f))
+
+(define (handle-wl_touch:cancel obj-id)
+  (sferr "touch:cancel \n")
+  (if #f #f))
+
+(define-wl-request wl_touch release)
+
+(define (handle-wl_touch:shape obj-id id major minor)
+  (sferr "touch:shape \n")
+  (if #f #f))
+
+(define (handle-wl_touch:orientation obj-id id orientation)
+  (sferr "touch:orientation \n")
+  (if #f #f))
+
+
 ;; --- wl_output
 
 (define (handle-wl_output:geometry obj-id x y physical_width physical_height
@@ -755,6 +785,13 @@ exec $GDB_PFX guile $0 "$@"
   (wl-event wl_keyboard key)
   (wl-event wl_keyboard modifiers)
   (wl-event wl_keyboard repeat_info)
+  (wl-event wl_touch down)
+  (wl-event wl_touch up)
+  (wl-event wl_touch motion)
+  (wl-event wl_touch frame)
+  (wl-event wl_touch cancel)
+  (wl-event wl_touch shape)
+  (wl-event wl_touch orientation)
   (wl-event wl_output geometry)
   (wl-event wl_output mode)
   (wl-event wl_output done)
@@ -859,7 +896,7 @@ exec $GDB_PFX guile $0 "$@"
              (n-read (vector-ref res 0))
              (control (or control (vector-ref res 1)))
              (flags (vector-ref res 2)))
-        (when io-debug (if (positive? n-read) (sferr "recv ~S B\n" n-read)))
+        ;;(when io-debug (if (positive? n-read) (sferr "recv ~S B\n" n-read)))
         (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
         (loop (+ n-have n-read) object-id msg-size opcode control)))
      ((not object-id)
@@ -1095,7 +1132,6 @@ exec $GDB_PFX guile $0 "$@"
          (height (ctx-height ctx))
          (top-id (ctx-top-id ctx))
          (srf-id (ctx-srf-id ctx)))
-    (set! io-debug #f)
     (xdg_toplevel:set_title top-id "wl-play")
     (xdg_toplevel:set_max_size top-id width height)
     (xdg_toplevel:set_min_size top-id width height)
@@ -1184,16 +1220,15 @@ exec $GDB_PFX guile $0 "$@"
             (ctx (appl-init width height format)))
        (set! appl-ctx ctx)
        (create-it ctx)
-       (set! appl-ptr-id                ; not sure this is needed
+       (set! appl-ptr-id                ; not sure ptr-id is ever needed
              (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
-       (set! appl-kbd-id                ; not sure this is needed
+       (set! appl-kbd-id                ; not sure kbd-id is ever needed
              (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
-       
-       #|  This instantly crashes the window system:
+       #|  This instantly crashes the gnome gdm session. 
        (set! appl-tch-id
-             (add-id 'wl_touch appl-ctx (wl_seat:get_touch seat-id <>)))
+             (add-id 'wl_touch appl-ctx (wl_seat:get_touch seat-id <>))))
        |#
-       )
+       (sferr "wl_seat = ~S\n" seat-id))
      (spawn-fiber model)
      ;;
      (sync-and-wait)

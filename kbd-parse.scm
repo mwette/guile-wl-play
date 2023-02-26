@@ -20,6 +20,7 @@
 ;;   RGHT => 'right ...
 ;;   unknown => wl-keycode
 ;; xkb starts codes at 9, wayland uses xkb-8, so starts at 1
+;; See xkbkey->guile procedure below.
 
 ;; keysym.txt format:a
 ;;   keycodes: scan code to keysym
@@ -174,6 +175,7 @@
     ("Caps_Lock" . LCTL)
     ;;
     ("Right" . right) ("Left" . left) ("Up" . up) ("Down" . down)
+    ("Backspace" . backspace)
     ))
 
 ;;(define keycode-vec #f)

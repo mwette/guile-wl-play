@@ -8,6 +8,12 @@ CFLAGS = -g -I/opt/local/include/guile/3.0 -Wunused
 #CFLAGS = -I/opt/local/include/guile/3.0
 LIBS = -L/opt/local/lib -Wl,--rpath=/opt/local/lib -lguile-3.0
 
+CFLAGS = -g -I/opt/guile-rel/3.0.8/include/guile/3.0 -Wunused
+LIBS = \
+	-L/opt/guile-rel/3.0.8/lib \
+	-Wl,--rpath=/opt/guile-rel/3.0.8/lib \
+	-lguile-3.0
+
 all: sockmsg.so mmap.so
 
 sockmsg.so: sockmsg.c

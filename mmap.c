@@ -42,8 +42,18 @@
 
 /* coming patch for mmap.c: */
 
+#include <stdatomic.h>
+
+static inline _Bool
+scm_atomic_compare_and_swap_uint32 (uint32_t *loc, uint32_t *expected,
+                                    uint32_t desired)
+{
+  atomic_uint_least32_t *a_loc = (atomic_uint_least32_t *) loc;
+  return atomic_compare_exchange_weak (a_loc, expected, desired);
+}
+
 static void
-mmap_finalizer (void *ptr, void *data)
+mmap_finalizer (void *ptr)
 {
   SCM bvec;
   void *c_addr;
@@ -61,13 +71,97 @@ mmap_finalizer (void *ptr, void *data)
     scm_misc_error ("mmap", "failed to munmap memory", SCM_EOL);
 }
 
+/* Code for scm_dynwind_acquire_port and release_port sourced from ports.c. */
+
+#include <iconv.h>
+
+typedef enum scm_t_port_type_flags {
+  SCM_PORT_TYPE_NEEDS_CLOSE_ON_GC = 1 << 0
+} scm_t_port_type_flags;
+
+struct scm_t_port_type
+{
+  char *name;
+  int (*print) (SCM exp, SCM port, scm_print_state *pstate);
+  size_t (*c_read) (SCM port, SCM dst, size_t start, size_t count);
+  size_t (*c_write) (SCM port, SCM src, size_t start, size_t count);
+  SCM scm_read;
+  SCM scm_write;
+  int (*read_wait_fd) (SCM port);
+  int (*write_wait_fd) (SCM port);
+  scm_t_off (*seek) (SCM port, scm_t_off OFFSET, int WHENCE);
+  void (*close) (SCM port);
+  void (*get_natural_buffer_sizes) (SCM port, size_t *read_size,
+                                    size_t *write_size);
+  int (*random_access_p) (SCM port);
+  int (*input_waiting) (SCM port);
+  void (*truncate) (SCM port, scm_t_off length);
+  unsigned flags;
+  SCM input_class, output_class, input_output_class;
+};
+
+struct scm_t_port
+{
+  SCM file_name;
+  SCM position;
+  SCM read_buf;
+  SCM write_buf;
+  SCM write_buf_aux;
+  size_t read_buffering;
+  uint32_t refcount;
+  uint32_t rw_random : 1;
+  uint32_t at_stream_start_for_bom_read  : 1;
+  uint32_t at_stream_start_for_bom_write : 1;
+  SCM encoding;
+  SCM conversion_strategy;
+  SCM precise_encoding;
+  iconv_t input_cd;
+  iconv_t output_cd;
+  SCM alist;
+};
+
+static void
+release_port (SCM port)
+{
+  scm_t_port *pt = SCM_PORT (port);
+  uint32_t cur = 1, next = 0;
+  while (!scm_atomic_compare_and_swap_uint32 (&pt->refcount, &cur, next))
+    {
+      if (cur == 0)
+        return;
+      next = cur - 1;
+    }
+ if (cur > 1)
+    return;
+
+  if (SCM_PORT_TYPE (port)->close)
+    SCM_PORT_TYPE (port)->close (port);
+
+  /* Skip encoding code from ports.c! */
+}
+
+static void
+scm_dynwind_acquire_port (SCM port)
+{
+  scm_t_port *pt = SCM_PORT (port);
+  uint32_t cur = 1, next = 2;
+  while (!scm_atomic_compare_and_swap_uint32 (&pt->refcount, &cur, next))
+    {
+      if (cur == 0)
+        scm_wrong_type_arg_msg (NULL, 0, port, "open port");
+      next = cur + 1;
+    }
+  scm_dynwind_unwind_handler_with_scm (release_port, port,
+                                       SCM_F_WIND_EXPLICITLY);
+}
+
 SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
-            (SCM addr, SCM len, SCM prot, SCM flags, SCM fd, SCM offset),
+            (SCM addr, SCM len, SCM prot, SCM flags, SCM file, SCM offset),
 	    "Create a memory mapping, returning a bytevector..  @var{addr},\n"
 	    "if non-zero, is the staring address; or, if zero, is assigned by\n"
 	    "the system.  @var{prot}, if provided, assigns protection.\n"
-	    "@var{fd}, if provided associates the memory region with a file\n"
-	    "starting at @var{offset}, if provided.\n"
+	    "@var{file}, a port or fd, if provided associates the memory\n"
+            "region with a file starting at @var{offset}, if provided.\n"
 	    "The region returned by mmap WILL be searched by the garbage\n"
 	    "collector for pointers.  See also mmap.  Note that the\n"
             "finalizer for the returned bytevector will call munmap.\n"
@@ -105,11 +199,22 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
   else
     c_flags = scm_to_int (flags);
 
-  if (SCM_UNBNDP (fd))
+  scm_dynwind_begin (0);
+  
+  if (SCM_UNBNDP (file))
     c_fd = -1;
+  else if (scm_is_integer (file))
+    c_fd = scm_to_int (file);
   else
-    c_fd = scm_to_int (fd);
-
+    {
+      /* Use the fd of the port under clobber protection from concurrency.
+         As scm_dynwind_acquire_port assumes that FILE is a port, check 
+         that first. */
+      SCM_VALIDATE_PORT (SCM_ARG5, file);
+      scm_dynwind_acquire_port (file);
+      c_fd = scm_to_int (scm_fileno (file));
+    }
+  
   if (SCM_UNBNDP (offset))
     c_offset = 0;
   else
@@ -122,21 +227,25 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
   if (c_mem == MAP_FAILED)
     scm_syserror ("mmap");              /* errno set */
 
-  pointer = scm_cell (scm_tc7_pointer, (scm_t_bits) c_mem);
-  bvec = scm_c_take_typed_bytevector((signed char *) c_mem + c_offset, c_len,
-				     SCM_ARRAY_ELEMENT_TYPE_VU8, pointer);
-  scm_i_set_finalizer (SCM2PTR (bvec), mmap_finalizer, (void*) c_len);
+  /* The fd is free to go now. */
+  scm_dynwind_end ();
+
+  pointer = scm_from_pointer ((signed char *) c_mem, mmap_finalizer);
+  bvec = scm_pointer_to_bytevector (pointer, scm_from_int(c_len),
+				    scm_from_int(c_offset),
+                                    (SCM) SCM_ARRAY_ELEMENT_TYPE_VU8);
+
   return bvec;
 }
 #undef FUNC_NAME
 
 SCM_DEFINE (scm_mmap, "mmap", 2, 4, 0,
-            (SCM addr, SCM len, SCM prot, SCM flags, SCM fd, SCM offset),
+            (SCM addr, SCM len, SCM prot, SCM flags, SCM file, SCM offset),
 	    "Create a memory mapping, returning a bytevector.  @var{addr}, if\n"
 	    "non-zero, is the staring address; or, if zero, is assigned by the\n"
-	    "system.  @var{prot}, if provided, assigns protection.  @var{fd},\n"
-	    "if provided associates the memory region with a file, starting \n"
-	    "at @var{offset}, if provided.\n"
+	    "system.  @var{prot}, if provided, assigns protection.\n"
+            "@var{file}, a port or fd, if provided associates the memory\n"
+            "region with a file, starting at @var{offset}, if provided.\n"
 	    "The region returned by mmap will NOT be searched by the garbage\n"
 	    "collector for pointers. See also mmap/search.  Note that the\n"
             "finalizer for the returned bytevector will call munmap.\n"
@@ -153,7 +262,7 @@ SCM_DEFINE (scm_mmap, "mmap", 2, 4, 0,
   size_t c_len;
   SCM bvec;
 
-  bvec = scm_mmap_search(addr, len, prot, flags, fd, offset);
+  bvec = scm_mmap_search(addr, len, prot, flags, file, offset);
   c_mem = SCM_BYTEVECTOR_CONTENTS(bvec);
   c_len = SCM_BYTEVECTOR_LENGTH(bvec);
 
@@ -199,43 +308,6 @@ SCM_DEFINE (scm_munmap, "munmap", 1, 0, 0,
   return SCM_UNSPECIFIED;
 }
 #undef FUNC_NAME
-
-#ifdef HAVE_MSYNC
-SCM_DEFINE (scm_msync, "msync", 2, 0, 0,
-            (SCM bvec, SCM flags),
-	    "Flush changes made to the in-core copy of a file mapped using\n"
-            "mmap or mmap/search.  This should be executed on modified memory\n"
-            "before calling munmap.  The @var{flags} argument must be exactly\n"
-            "one of the following:\n"
-            "@table @code\n"
-            "@item MS_ASYNC\n"
-            "Initiate update, return immediately.\n"
-            "@item MS_SYNC\n"
-            "Initiate update, block until complete.\n"
-            "@item MS_INVALIDATE\n"
-            "Invalidate other mappings of the same file.\n"
-            "@end table\n"
-            "The return value is unspecified.")
-#define FUNC_NAME s_scm_msync
-{
-  void *addr;
-  size_t len;
-  int c_flags, rv;
-
-  SCM_VALIDATE_BYTEVECTOR (1, bvec);
-  addr = (void *) SCM_BYTEVECTOR_CONTENTS (bvec);
-  len = SCM_BYTEVECTOR_LENGTH (bvec);
-
-  c_flags = scm_to_int (flags);
-
-  SCM_SYSCALL (rv = msync(addr, len, c_flags));
-  if (rv == -1)
-    SCM_SYSERROR;			/* errno set */
-
-  return SCM_UNSPECIFIED;
-}
-#undef FUNC_NAME
-#endif /* HAVE_MSYNC */
 
 void
 scm_init_mmap(void) {
