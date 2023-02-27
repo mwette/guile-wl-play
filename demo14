@@ -1245,7 +1245,7 @@ exec $GDB_PFX guile $0 "$@"
               (fx (map (lambda (f) (assq-ref rd f)) formats)))
          (pperr fx)))
      (close-port wl-sock))
-   #:hz 0 #:install-suspendable-ports? #f))
+   #:hz 0 #:parallelism 1 #:install-suspendable-ports? #t))
 
 (appl-main)
 
