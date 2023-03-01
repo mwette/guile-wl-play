@@ -55,6 +55,9 @@ scm_atomic_compare_and_swap_uint32 (uint32_t *loc, uint32_t *expected,
 static void
 mmap_finalizer (void *ptr)
 {
+#if 1
+  fprintf(stderr, "mmap_finializer can't run becuase size is unknown\n");
+#else
   SCM bvec;
   void *c_addr;
   size_t c_len;
@@ -69,6 +72,7 @@ mmap_finalizer (void *ptr)
   SCM_SYSCALL (rv = munmap(c_addr, c_len));
   if (rv != 0)
     scm_misc_error ("mmap", "failed to munmap memory", SCM_EOL);
+#endif
 }
 
 /* Code for scm_dynwind_acquire_port and release_port sourced from ports.c. */
@@ -214,11 +218,10 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
       scm_dynwind_acquire_port (file);
       c_fd = scm_to_int (scm_fileno (file));
     }
-  
+
   if (SCM_UNBNDP (offset))
-    c_offset = 0;
-  else
-    c_offset = scm_to_off_t (offset);
+    offset = scm_from_int (0);
+  c_offset = scm_to_off_t (offset);
 
   if ((c_addr == NULL) && (c_flags & MAP_FIXED))
     scm_misc_error ("mmap", "cannot have NULL addr w/ MAP_FIXED", SCM_EOL);
@@ -231,10 +234,11 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
   scm_dynwind_end ();
 
   pointer = scm_from_pointer ((signed char *) c_mem, mmap_finalizer);
-  bvec = scm_pointer_to_bytevector (pointer, scm_from_int(c_len),
-				    scm_from_int(c_offset),
-                                    (SCM) SCM_ARRAY_ELEMENT_TYPE_VU8);
+  bvec = scm_pointer_to_bytevector (pointer, len, offset,
+				    scm_from_locale_symbol("vu8"));
+  //finalizer
 
+  //scm_dynwind_end ();
   return bvec;
 }
 #undef FUNC_NAME

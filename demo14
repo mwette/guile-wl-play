@@ -571,7 +571,6 @@ exec $GDB_PFX guile $0 "$@"
 (define (handle-wl_keyboard:keymap obj-id format fd size)
   ;;(sferr "got keymap obj ~A format ~A fd ~A size ~A\n" obj-id format fd size)
   ;; ASSUME format is xkb
-  ;;
   (let* ((size (1- size)) ;; trim trailing nul
          (mem (mmap 0 size PROT_READ MAP_PRIVATE fd 0))
          (kmpair (get-keymaps (utf8->string mem))))
@@ -1224,7 +1223,9 @@ exec $GDB_PFX guile $0 "$@"
              (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
        (set! appl-kbd-id                ; not sure kbd-id is ever needed
              (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
-       #|  This instantly crashes the gnome gdm session. 
+       #|
+       |#
+       #| instantly crashes the gdm user session on 20.10, and gdm on 20.04
        (set! appl-tch-id
              (add-id 'wl_touch appl-ctx (wl_seat:get_touch seat-id <>))))
        |#
