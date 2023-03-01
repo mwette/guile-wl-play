@@ -1,13 +1,13 @@
 #!/bin/bash
 # -*- scheme -*-
 #|
-# demo14 - wayland client in fibers, targeted for V0.14.0
+# demo15 - wayland client in fibers, targeted for V0.15.0
 #
 # usage:
-#   $ ./demo14
+#   $ ./demo15
 #   runs for 10 seconds : hit Return key to see different text
 # or
-#   $ ./demo14 1
+#   $ ./demo15 1
 #   $ telnet localhost 37146
 #   scheme@(guile-user)> (done)
 
@@ -76,15 +76,13 @@ exec $GDB_PFX guile $0 "$@"
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
-(when (not (defined? 'mmap)) (load-extension "mmap" "scm_init_mmap"))
-
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
 (use-modules (ice-9 atomic))
 (use-modules (srfi srfi-9))
 
+(use-modules (extras))
 (use-modules (wl-client))
-(use-modules (sockmsg))
 (use-modules (kbd-parse))
 
 (use-modules (system repl server))
