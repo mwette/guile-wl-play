@@ -59,7 +59,7 @@ exec $GDB_PFX guile $0 "$@"
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
-(define my-mmap mmap)
+(when (not (defined? 'mmap)) (load-extension "mmap" "scm_init_mmap"))
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
@@ -702,7 +702,7 @@ exec $GDB_PFX guile $0 "$@"
          (bufsize (* gran (quotient (+ (* 2 size) (1- gran)) gran)))
          (port (let ((port (tmpfile))) (truncate-file port bufsize) port))
          (fd (port->fdes port))
-         (bv (my-mmap 0 bufsize (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+         (bv (mmap 0 bufsize (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
          (smp-id (gen-id-using (wl_shm:create_pool shm-id <> fd bufsize)))
          (srf-id (gen-id-using (wl_compositor:create_surface comp-id <>)))
          (xrf-id (gen-id-using (xdg_wm_base:get_xdg_surface base-id <> srf-id)))

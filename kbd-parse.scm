@@ -15,17 +15,24 @@
 ;; You should have received a copy of the GNU Lesser General Public License
 ;; along with this library; if not, see <http://www.gnu.org/licenses/>.
 
+;; approach is to encode keyboard-state + keypress into event-vectors
+;;   a => [#\a];  shift+a => [#\A];  control+a => [control #\a]
+;;   RGHT => 'right ...
+;;   unknown => wl-keycode
+;; xkb starts codes at 9, wayland uses xkb-8, so starts at 1
+;; See xkbkey->guile procedure below.
+
+;; keysym.txt format:a
+;;   keycodes: scan code to keysym
+;;      <FOO> = 24 ;
+;;   type : what modifier do
+;;      type "foo" { ??? }
+;;   key symbols : keysyms to symbols
+;;      <ESC> => Escape
+
 ;; https://wiki.archlinux.org/title/X_keyboard_extension
 ;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Keyboard-Events.html
 ;;   meta control shift hyper super alt
-
-
-;; keycodes: scan code to keysym
-;;    <FOO> = 24 ;
-;; type : what modifier do
-;;    type "foo" { ??? }
-;; key symbols : keysyms to symbols
-;;    <ESC> => Escape
 
 (define-module (kbd-parse)
   #:export (kbd-read parse-kbd))
@@ -166,6 +173,9 @@
     ("Alt_L" . A-) ("Alt_R" . A-)
     ;;
     ("Caps_Lock" . LCTL)
+    ;;
+    ("Right" . right) ("Left" . left) ("Up" . up) ("Down" . down)
+    ("Backspace" . backspace)
     ))
 
 ;;(define keycode-vec #f)

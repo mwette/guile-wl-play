@@ -8,21 +8,24 @@ implementing the protocol and interacting with the server in Guile.
 This uses fibers to run a cooperative sender, receiver and monitor.
 The monitor is guile coop-server.  connect: "telnet localhost 37146"
 
+# requires guile-fibers and libcairo installed
+# https://github.com/wingo/fibers
+
 sockmsg.c	sendmsg and recvmsg! along with
 		bytevector->cmsg-list cmsg-list->bytevector
 
-xmmap.c		ugly hack for mmap, better one coming to guile
+mmap.c		mmap
 
 wl-client.scm	support code
 scanner		wayland client protocol code generator
 code/*.scm	generated codes
 
-demo07		demo program
-demo08		adding more structure, scrolled update
+demo/		old demo programs
+demoNN		latest demo
 
-V0.10.0		first working release
-V0.11.0		updated scanner, generates enums, added demo08
+I'm running on Ubuntu 22.10, which uses wayland by default (over X11)
 
+formats:
  1211384408
  1211384385
  1211388504

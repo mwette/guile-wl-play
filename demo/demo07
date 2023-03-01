@@ -59,12 +59,7 @@ exec $GDB_PFX guile $0
 ;;  4 scan .xml enums
 
 ;; if mman not in guile:
-(define my-mmap
-  (cond
-   ((provided? 'mman) mmap)
-   (else
-    (load-extension "xmmap" "scm_init_xmmap")
-    xmmap)))
+(when (not (defined? 'mmap)) (load-extension "mmap" "scm_init_mmap"))
 
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
@@ -636,7 +631,7 @@ exec $GDB_PFX guile $0
 (define* (create-file-buffer #:optional (size #x1000000))
   (let* ((port (let ((port (tmpfile))) (truncate-file port size) port))
          (fd (port->fdes port))
-         (bv (my-mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
+         (bv (mmap 0 size (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0)))
     (set! my-buf-bv bv)
     (set! my-buf-fd fd)
     (if #f #f)))

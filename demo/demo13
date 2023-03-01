@@ -1,11 +1,12 @@
 #!/bin/bash
 # -*- scheme -*-
 #|
-# demo09 - wayland client in fibers
+# demo13 - wayland client in fibers, targeted for V0.13.0
 # usage:
-#   $ ./demo09 1
+#   $ ./demo13
+#     ^ runs for 10 seconds : hit Return key to see different text
+#   $ ./demo13 1
 #   $ telnet localhost 37146
-#   scheme@(guile-user)> (tryit)
 #   scheme@(guile-user)> (done)
 
 TOP=`pwd`
@@ -62,7 +63,6 @@ exec $GDB_PFX guile $0 "$@"
 ;;  3 add sync mech: send sync, wait for done
 ;;  4 scan .xml enums
 
-;; if mman not in guile:
 (when (not (defined? 'mmap)) (load-extension "mmap" "scm_init_mmap"))
 
 (use-modules (rnrs bytevectors))
@@ -229,6 +229,29 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; ====================================
 
+;; order of lifetime: shortest to longest
+
+;; cursor cursor
+
+;; ro-wo dpy-ix drw-x dpy-cr drw-cr    <bufr>
+;; ro-ws ft-asc ft-dsc ft-hei ft-wid   <font>
+;; ro-wn smp-id srf-id 
+;; rs-wn xrf-id top-id
+;; ro-ws width height format  
+;; rs-wn port
+
+;; may want closure for
+;;  (create_buffer smp-id <> drw-ix width height stride format) => id
+;;  (set-ctx-mkbuf! (lambda () ...)) ;;  => (values buf-id drw-ix)
+;;
+;; or [changed? drw-ix drw-cr dpy-ix dpy-cr rest]
+
+#|
+ (define-record-type <ctx>
+   changed
+   rest)
+ (define-record-type 
+|#
 
 (define-record-type <ctx>
   (%make-ctx changed
@@ -239,19 +262,8 @@ exec $GDB_PFX guile $0 "$@"
   ctx?
   (changed ctx-changed? set-ctx-changed!)
   ;;
-  (port ctx-port set-ctx-port!)
-  (width ctx-width set-ctx-width!)
-  (height ctx-height set-ctx-height!)
-  (format ctx-format set-ctx-format!)
-  ;;
-  (smp-id ctx-smp-id set-ctx-smp-id!)
-  (srf-id ctx-srf-id set-ctx-srf-id!)
-  (xrf-id ctx-xrf-id set-ctx-xrf-id!)
-  (top-id ctx-top-id set-ctx-top-id!)
-  ;;
   (dpy-ix ctx-dpy-ix set-ctx-dpy-ix!)
   (drw-ix ctx-drw-ix set-ctx-drw-ix!)
-  ;;
   (dpy-cr ctx-dpy-cr set-ctx-dpy-cr!)
   (drw-cr ctx-drw-cr set-ctx-drw-cr!)
   ;;
@@ -259,7 +271,16 @@ exec $GDB_PFX guile $0 "$@"
   (ft-dsc ctx-ft-dsc)
   (ft-hei ctx-ft-hei)
   (ft-wid ctx-ft-wid)
-  )
+  ;;
+  (smp-id ctx-smp-id set-ctx-smp-id!)
+  (srf-id ctx-srf-id set-ctx-srf-id!)
+  (xrf-id ctx-xrf-id set-ctx-xrf-id!)
+  (top-id ctx-top-id set-ctx-top-id!)
+  ;;
+  (width ctx-width set-ctx-width!)
+  (height ctx-height set-ctx-height!)
+  (format ctx-format set-ctx-format!)
+  (port ctx-port set-ctx-port!))
 
 (define (make-ctx . args)
   (apply %make-ctx #t args))
@@ -361,6 +382,8 @@ exec $GDB_PFX guile $0 "$@"
 
 (define (handle-wl_buffer:release obj-id)
   ;;(sferr "wl_buffer:release ~s\n" obj-id)
+  ;; actually, once released, we can reuse (i.e., assign back to dpy-id)
+  ;; FIXME: We should reuse and not destroy:
   (wl_buffer:destroy obj-id)
   (vector-set! object-value-vec obj-id #f))
 
@@ -450,16 +473,17 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; --- wl_keyboard
 
-;; modifiers:
-;;   none = 0
-;;   shift = 1
+;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Keymaps.html
 
-;; emacs-key: shift control meta alt hyper super
-;;     mouse: click drag down
+;;  emacs:
+;;    key  : shift control meta alt hyper super
+;;    mouse: click drag down
 
+(define kbd-mods 0)
 (define kbd-base-v #f)
 (define kbd-shft-v #f)
-(define kbd-mods 0)
+;; (define (kbd-levels #f)
+;; (define (kbd-nlevel #f)
 
 (define (set-mod key)
   (case key
@@ -519,7 +543,7 @@ exec $GDB_PFX guile $0 "$@"
   (if #f #f))
 
 (define (handle-wl_keyboard:leave obj-id serial surface)
-  (sferr "kb leave~S\n")
+  (sferr "kb leave\n")
   (if #f #f))
 
 (define (handle-wl_keyboard:key obj-id serial time key state)
@@ -530,8 +554,8 @@ exec $GDB_PFX guile $0 "$@"
         (or (and (symbol? base) (clr-mod base))
             (put-message ev-chan (encase/mods base shft)))
         (or (and (symbol? base) (set-mod base))))
+    (if (and (positive? state) (equal? base #\return)) (doit))
     ;;(sferr "key ~A: ~S => ~S, ~A\n"(if (zero? state) "rel" "prs") key base)
-    ;;(if (= key 28) (doit))
     (if #f #f)))
 
 (define (handle-wl_keyboard:modifiers obj-id serial
@@ -712,6 +736,12 @@ exec $GDB_PFX guile $0 "$@"
     (wl_display:sync display-id id)
     (wait cd)))
 
+;; (define-syntax atomic-sequence ...
+;;    (encode-foo x y z) (encode-
+;;    (put-message rq-chan msgs)
+;;;   (sync)
+;;;   (wait)
+
 (define shm-id #f)
 (define comp-id #f)
 (define seat-id #f)
@@ -868,13 +898,19 @@ exec $GDB_PFX guile $0 "$@"
      (create-it)
      (if (> (length (program-arguments)) 1)
          (wait done-cond)
-         (fsleep 20.0))
+         (fsleep 10.0))
      (force-output (current-error-port))
+     (when #f
+       (let* ((rd (map (lambda (p) (cons (cdr p) (car p))) wl_shm:format-enum))
+              (fx (map (lambda (f) (assq-ref rd f)) formats)))
+         (pperr fx)))
      (close-port wl-sock))
    #:hz 0 #:install-suspendable-ports? #f))
 
 
 ;; === appl ===========================
+
+;; move starts with xdg_toplevel:move
 
 (use-modules (ffi ffi-help-rt))
 (use-modules (ffi cairo))
@@ -894,13 +930,27 @@ exec $GDB_PFX guile $0 "$@"
 (define gran #x100000)                  ; bufsize granularity
 
 (define (draw-pane-1 cr wid hei)
-  (let* ((rad 40.0) (wmr (- wid rad)) (hmr (- hei rad)))
+  #|
+  (let* ((ux (make-double 0.0)) (uy (make-double 0.0)))
+    (cairo_device_to_user_distance cr (pointer-to ux) (pointer-to uy))
+    (sferr "ux=~S uy=~S\n" (fh-object-ref ux) (fh-object-ref uy)))
+  |#
+  (let* ((lw/2 2.0) (bar 80.0)
+         (rad 40.0) (wmr (- wid rad)) (hmr (- hei rad)))
     (cairo_save cr)
-    (cairo_set_line_width cr 1.0)
+    (cairo_set_line_width cr (* 2 lw/2))
     (cairo_set_source_rgba cr 0.0 0.0 0.0 0.0)
     (cairo_paint cr)
-    (cairo_set_source_rgb cr 0.0 0.0 0.0)
-    (cairo_move_to cr rad 0.0)
+    (cairo_set_source_rgba cr 0.0 0.0 0.0 1.0) ; black line
+    (cairo_move_to cr lw/2 bar)
+    (cairo_line_to cr lw/2 rad)
+    (cairo_curve_to cr lw/2 lw/2 lw/2 lw/2 rad lw/2)
+    (cairo_line_to cr (- wid rad) lw/2)
+    (cairo_curve_to cr lw/2 lw/2 lw/2 lw/2 (- wid lw/2) rad)
+    (cairo_line_to cr (- wid lw/2) bar)
+    (cairo_close_path cr)
+    (cairo_fill_preserve cr)
+    #|
     (cairo_curve_to cr 0.0 0.0 0.0 0.0 0.0 rad)
     (cairo_line_to cr 0.0 hei)
     (cairo_line_to cr wid hei)
@@ -908,25 +958,36 @@ exec $GDB_PFX guile $0 "$@"
     (cairo_curve_to cr wid 0.0 wid 0.0 wmr 0.0)
     (cairo_close_path cr)
     (cairo_stroke cr)
+    (cairo_restore cr)
     (cairo_set_source_rgb cr 0.8 0.8 0.8)
     (cairo_fill cr)
-    (cairo_restore cr)))
+    |#
+    ))
 
 (define (draw-pane-2 cr wid hei)
-  (cairo_set_source_rgb cr 0.8 0.8 0.8)
-  (cairo_set_line_width cr 2.0)
-  (cairo_move_to cr 1.0 0.0)
-  (cairo_line_to cr 1.0 299.0)
-  (cairo_line_to cr 499.0 299.0)
-  (cairo_line_to cr 499.0 0.0)
-  (cairo_stroke cr)
-  (cairo_set_line_width cr 20.0)
-  (cairo_move_to cr 1.0 10.0)
-  (cairo_line_to cr 500.0 10.0)
-  (cairo_stroke cr)
-  (cairo_restore cr))
+  (let* ((lw 4.0) (lw/2 (/ lw 2)) (bar 40.0))
+    (cairo_save cr)
+    (cairo_set_source_rgb cr 0.8 0.8 0.8)
+    (cairo_paint cr)
+    ;;
+    (cairo_set_source_rgb cr 0.0 0.0 1.0)
+    (cairo_set_line_width cr lw)
+    (cairo_move_to cr lw/2 lw/2)
+    (cairo_line_to cr lw/2 (- hei lw/2))
+    (cairo_line_to cr (- wid lw/2) (- hei lw/2))
+    (cairo_line_to cr (- wid lw/2) lw/2)
+    (cairo_close_path cr)
+    (cairo_stroke cr)
+    ;;
+    (cairo_move_to cr 0.0 bar)
+    (cairo_line_to cr wid bar)
+    (cairo_stroke cr)
+    (cairo_set_source_rgb cr 0.4 0.4 0.4)
+    (cairo_fill cr)
+    ;;
+    (cairo_restore cr)))
 
-(define draw-pane draw-pane-1)
+(define draw-pane draw-pane-2)
 
 (define (init-cr-txt cr)
   (let ((face "monospace")
@@ -973,9 +1034,11 @@ exec $GDB_PFX guile $0 "$@"
                         ft-asc ft-dsc ft-hei ft-wid)))
     (init-cr-txt drw-cr)
     ;;
+    #|
     (let ((ux (make-double)) (uy (make-double)))
       (cairo_device_to_user_distance dpy-cr (pointer-to ux) (pointer-to uy))
       (sferr "ux=~S yu=~S\n" (fh-object-ref ux) (fh-object-ref uy)))
+    |#
     (cond
      (#t
       (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
@@ -995,18 +1058,18 @@ exec $GDB_PFX guile $0 "$@"
     ctx))
 
 (define get-text
-  (let ((ix 0)
-        (text (vector "a good day, I'd say,"
-                      "when the wine is red,"
-                      "and the code is working"
-                      "I could go like this more"
-                      "so could you, I guess"
-                      )))
+  (let* ((cx 0)
+         (text (vector "a good day, I'd say,"
+                       "when the wine is red,"
+                       "and the code is working"
+                       "I could go like this more"
+                       "so could you, I guess"
+                       ))
+         (ln (vector-length text)))
     (lambda ()
-      (if (> ix (vector-length text))
-          (set! ix 1)
-          (set! ix (1+ ix)))
-      (vector-ref text (1- ix)))))
+      (let ((ix cx))
+        (set! cx (remainder (1+ cx) ln))
+        (vector-ref text ix)))))
 
 (define lbr-bw 2.0)                   ; left/bottom/right border width
 (define tx-pad 4.0)
@@ -1029,13 +1092,37 @@ exec $GDB_PFX guile $0 "$@"
     ;; draw border : looks cheesy
     (draw-pane cr 500.0 300.0)
     
-    (when #t
+    (when #f
       (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))
         (cairo_save cr)
         (cairo_set_source_surface cr dpy-srf 2.0 (- txhei))
         (cairo_rectangle cr 2.0 (- base-y txhei)
                          (- 300.0 4.0) (- 300.0 base-y txhei))
         (cairo_fill cr)
+        (cairo_restore cr)))
+    (when #t
+      (let ()
+        (cairo_save cr)
+        ;;
+        (cairo_set_source_rgb cr 0.5 0.0 0.0)
+        (cairo_move_to cr 100.0 100.0)
+        (cairo_line_to cr 200.0 100.0)
+        (cairo_line_to cr 200.0 150.0)
+        (cairo_line_to cr 100.0 150.0)
+        (cairo_close_path cr)
+        (cairo_fill cr)
+        (cairo_stroke cr)
+        ;;
+        ;;(cairo_set_source_rgb cr 0.0 0.5 0.0)
+        (cairo_set_source_rgba cr 0.0 0.5 0.0 0.5)
+        (cairo_move_to cr 125.0 125.0)
+        (cairo_line_to cr 225.0 125.0)
+        (cairo_line_to cr 225.0 175.0)
+        (cairo_line_to cr 125.0 175.0)
+        (cairo_close_path cr)
+        (cairo_fill cr)
+        (cairo_stroke cr)
+        ;;
         (cairo_restore cr)))
     
     ;; write text
@@ -1046,7 +1133,7 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; read xdg_surface description in xdg-shell.xml
 (define (create-it)
-  (let* ((width 500) (height 300) (format 'xrgb8888)
+  (let* ((width 500) (height 300) (format 'argb8888)
          (ctx (appl-init width height format))
          (top-id (ctx-top-id ctx))
          (srf-id (ctx-srf-id ctx)))
@@ -1059,6 +1146,8 @@ exec $GDB_PFX guile $0 "$@"
     (if #f #f)))
   
 ;; This gets called in response to xdg_surface:configure event.
+
+;; This is executed in the context of the receiver task.
 (define (xrf-config ctx)
   (sferr "xrf-config\n")
   (let ((srf-id (ctx-srf-id ctx)))
@@ -1076,13 +1165,16 @@ exec $GDB_PFX guile $0 "$@"
                (dpy-cr (ctx-dpy-cr ctx))
                (drw-cr (ctx-drw-cr ctx)))
           (set-object! drw-id 'wl_buffer ctx)
+          ;; What if events occur between draw-buffer and committed?
           (draw-buffer ctx)
           (wl_surface:attach srf-id drw-id 0 0)
+          ;; --- damage request may go here ---
           ;; buffer swap
           (set-ctx-drw-cr! ctx dpy-cr)
           (set-ctx-dpy-cr! ctx drw-cr)
           (set-ctx-drw-ix! ctx dpy-ix)
           (set-ctx-dpy-ix! ctx drw-ix)
+          ;; wait for release?
           (ctx-committed! ctx)))
     (wl_surface:commit srf-id)))
 
