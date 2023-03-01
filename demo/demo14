@@ -1,0 +1,1253 @@
+#!/bin/bash
+# -*- scheme -*-
+#|
+# demo14 - wayland client in fibers, targeted for V0.14.0
+#
+# usage:
+#   $ ./demo14
+#   runs for 10 seconds : hit Return key to see different text
+# or
+#   $ ./demo14 1
+#   $ telnet localhost 37146
+#   scheme@(guile-user)> (done)
+
+TOP=`pwd`
+
+LD_LIBRARY_PATH=$TOP:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH
+
+GUILE_LOAD_PATH=$TOP:$GUILE_LOAD_PATH
+export GUILE_LOAD_PATH
+
+# Fibers uses some deprecated bit ops:
+export GUILE_WARN_DEPRECATED=no
+
+GDB_PFX=""
+if [ $# -gt 0 ]; then
+    case "$1" in
+    --debug) GDB_PFX="gdb --args"; shift ;;
+    esac
+fi
+
+#export PATH=/opt/guile-rel/3.0.8/bin:$PATH
+guild compile -O0 $0
+exec $GDB_PFX guile $0 "$@"
+|#
+!#
+;; Copyright (C) 2022-2023 Matthew Wette
+;;
+;; This library is free software; you can redistribute it and/or
+;; modify it under the terms of the GNU Lesser General Public
+;; License as published by the Free Software Foundation; either
+;; version 3 of the License, or (at your option) any later version.
+;;
+;; This library is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;; Lesser General Public License for more details.
+;;
+;; You should have received a copy of the GNU Lesser General Public License
+;; along with this library; if not, see <http://www.gnu.org/licenses/>.
+
+;; NOTES
+;;  1 wayland reserved obj-id's 0 and 1, this adds 2 for registry
+;;  2 registry: interface-string-name => #(name interface version)
+;;  3 globals-dict: interface-symbol-name => client-id
+;;  4 globals: list of globals
+;;  5 potential race-condition between allocating id's, as servers wants
+;;    to see them in sequence (so odd)
+
+;; TODO
+;;  2 figure out how to really use polling so we don't need
+;;    to call sleep or watch guile run at 100% all the time
+;;  3 think about add sync / done (see sync-and-wait)
+;;  5 think about context and how we update
+;;    keyboard, pointer, buffer
+;;    a) maybe dispatch generates an event stream
+;;       event stream = (event . (
+;;       send to model!
+;;    b) fold state-trans state events
+;;    c) named-let loop with high-volatility state as args <= in-work
+
+;; DONE
+;;  1 add a layer somehow so callers don't need to pass rq-iobuf 0
+;;    need a way to block the sender until a number of messages have
+;;    built up
+;;  4 scan .xml enums
+
+;; if mman not in guile:
+(when (not (defined? 'mmap)) (load-extension "mmap" "scm_init_mmap"))
+
+(use-modules (rnrs bytevectors))
+(use-modules (system foreign))
+(use-modules (ice-9 atomic))
+(use-modules (srfi srfi-9))
+
+(use-modules (wl-client))
+(use-modules (sockmsg))
+(use-modules (kbd-parse))
+
+(use-modules (system repl server))
+(use-modules (system repl coop-server))
+
+(use-modules ((fibers) #:renamer (lambda (s) (if (eq? s 'sleep) 'fsleep s))))
+(use-modules (fibers scheduler))
+(use-modules (fibers conditions))
+(use-modules (fibers channels))
+
+(use-modules (ice-9 format))
+(use-modules (ice-9 pretty-print))
+(define (fferr fmt . args)
+  (apply format (current-error-port) fmt args))
+(define (sferr fmt . args)
+  (apply simple-format (current-error-port) fmt args)
+  (force-output (current-error-port)))
+(define (pperr exp) (pretty-print exp (current-error-port)))
+
+;; ============================================================================
+
+(define wl-debug #f)
+
+;; per-interface vectors of handlers by opcode
+(define my-handler-vec-vec (make-wl-handler-vec-vec))
+
+(define obj-vec-sz 1000)
+
+;; vector of object-id => ref into wl-decoder-vec (decoder by opcode)
+(define object-decoders-vec (make-vector obj-vec-sz #f))
+
+;; vector of object-id => ref into wl-handler-vec (handler by opcode)
+(define object-handlers-vec (make-vector obj-vec-sz #f))
+
+;; vector of objec-id => user-defined value
+(define object-value-vec (make-vector obj-vec-sz #f))
+
+(define alloc-id
+  (let* ((box (make-atomic-box 2))
+         (inc (lambda (id) (let ((id (1+ id))) (if (>= id obj-vec-sz) 2 id))))
+         (ret (lambda (id) (vector-set! object-value-vec id #t) id)))
+    (vector-set! object-value-vec 0 #t)
+    (vector-set! object-value-vec 1 #t)
+    (lambda ()
+      (let loop ((exp (atomic-box-ref box)))
+        (let* ((cur (atomic-box-compare-and-swap! box exp (inc exp))))
+          (if (eq? cur exp)
+              (if (vector-ref object-value-vec cur) (alloc-id) (ret cur))
+              (loop (atomic-box-ref box))))))))
+
+(define globals-dict (make-hash-table 97))
+
+;; pre-defined object ids
+(define null-id 0)
+(define display-id 1)
+(define registry-id 2)
+
+;; interface-name => #(name interface version)
+(define registry (make-hash-table))
+
+;; set-object!
+(define* (set-object! obj-id obj-iface #:optional (obj-value #t))
+  (let* ((ob-indx obj-id) (if-name obj-iface)
+         (if-name (if (string? if-name) (string->symbol if-name) if-name))
+         (if-indx (assq-ref wl-index-dict if-name))
+         (if-decoders (vector-ref wl-decoder-vec-vec if-indx))
+         (if-handlers (vector-ref my-handler-vec-vec if-indx)))
+    (when wl-debug (sferr "object: ~S is ~S\n" obj-id obj-iface))
+    (vector-set! object-decoders-vec ob-indx if-decoders)
+    (vector-set! object-handlers-vec ob-indx if-handlers)
+    (vector-set! object-value-vec ob-indx obj-value)))
+
+(define (set-object-value! obj-id obj-value)
+  (vector-set! object-value-vec obj-id obj-value))
+
+(define (doc-str obj-id opcode)
+  (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
+         (decoder (and dec-vec (vector-ref dec-vec opcode))))
+    (and (procedure? decoder) (procedure-documentation decoder))))
+
+;; set-event-handler! 'wl_displaly 'get_registry proc => prev-proc
+(define (set-event-handler! interface event proc)
+  (let* ((if-indx (assq-ref wl-index-dict interface))
+         (opcode (assq-ref (vector-ref wl-opcode-dict-vec if-indx) event))
+         (if-handlers (vector-ref my-handler-vec-vec if-indx))
+         (evt-handler (vector-ref if-handlers opcode)))
+    (vector-set! if-handlers opcode proc)
+    evt-handler))
+
+(define (dispatch obj-id opcode bv ix cm)
+  (let* ((dec-vec (vector-ref object-decoders-vec obj-id))
+         (decoder (and dec-vec (vector-ref dec-vec opcode)))
+         (hlr-vec (vector-ref object-handlers-vec obj-id))
+         (handler (and hlr-vec (vector-ref hlr-vec opcode))))
+    (if (and decoder handler)
+        (call-with-values (lambda () (decoder obj-id bv ix cm)) handler)
+        (begin
+          (sferr "dispatch: missing decoder or handler: id=~S op=~S\n"
+                 obj-id opcode)
+          (sferr "  dec-vec?=~S decoder?=~S hlr-vec?=~S handler?=~S\n"
+                 (and dec-vec #t) (and decoder #t)
+                 (and hlr-vec #t) (and handler #t))))))
+
+;; ====================================
+
+(eval-when (expand load eval)
+  (define (gen-id x . args)
+    (define (any->str obj)
+      (if (string? obj) obj (symbol->string (syntax->datum obj))))
+    (datum->syntax x (string->symbol (string-join (map any->str args) "")))))
+
+(define-syntax define-wl-request
+  (lambda (x)
+    (syntax-case x ()
+      ((_ iface meth arg ...)
+       #`(define (#,(gen-id x #'iface ":" #'meth) obj-id arg ...)
+           (when wl-debug (sferr "=> ~S:~S ...\n" 'iface 'meth))
+           (put-message rq-chan
+             (lambda ()
+               (#,(gen-id x "encode-" #'iface ":" #'meth)
+                obj-id rq-iobuf 0 arg ...))))))))
+
+(define-syntax wl-event
+  (lambda (x)
+    (syntax-case x ()
+      ((_ iface meth)
+       #`(set-event-handler!
+          'iface 'meth
+          (lambda args
+            (when wl-debug (sferr "<= ~S:~S\n" 'iface 'meth))
+            (apply #,(gen-id x "handle-" #'iface ":" #'meth) args)))))))
+
+(define-syntax fix-arg
+  (syntax-rules (<>)
+    ((_ id <>) id)
+    ((_ id ex) ex)))
+
+(define-syntax gen-id-using
+  (syntax-rules (<>)
+    ((_ (proc arg ...))
+     (let ((id (alloc-id)))
+       (proc (fix-arg id arg) ...) id))))
+
+(define-syntax add-id
+  (syntax-rules (<>)
+    ((_ iface (proc arg ...))
+     (let ((id (alloc-id)))
+       (set-object! id iface)
+       (proc (fix-arg id arg) ...)
+       id))
+    ((_ iface value (proc arg ...))
+     (let ((id (alloc-id)))
+       (set-object! id iface value)
+       (proc (fix-arg id arg) ...)
+       id))
+    ))
+
+;; ====================================
+
+;; order of lifetime: shortest to longest
+
+;; cursor cursor
+
+;; ro-wo dpy-ix drw-x dpy-cr drw-cr    <bufr>
+;; ro-ws ft-asc ft-dsc ft-hei ft-wid   <font>
+;; ro-wn smp-id srf-id 
+;; rs-wn xrf-id top-id *seat-id*
+;; ro-ws width height format  
+;; rs-wn port
+
+;; may want closure for
+;;  (create_buffer smp-id <> drw-ix width height stride format) => id
+;;  (set-ctx-mkbuf! (lambda () ...)) ;;  => (values buf-id drw-ix)
+;;
+;; or [changed? drw-ix drw-cr dpy-ix dpy-cr rest]
+
+#|
+ (define-record-type <ctx>
+   changed
+   rest)
+ (define-record-type 
+|#
+
+(display "add seat-id\n")
+(define-record-type <ctx>
+  (%make-ctx changed
+             port bvec
+             width height format
+             smp-id srf-id xrf-id top-id
+             dpy-ix drw-ix dpy-cr drw-cr
+             ft-asc ft-dsc ft-hei ft-wid)
+  ctx?
+  (changed ctx-changed? set-ctx-changed!)
+  ;;
+  (dpy-ix ctx-dpy-ix set-ctx-dpy-ix!)
+  (drw-ix ctx-drw-ix set-ctx-drw-ix!)
+  (dpy-cr ctx-dpy-cr set-ctx-dpy-cr!)
+  (drw-cr ctx-drw-cr set-ctx-drw-cr!)
+  ;;
+  (ft-asc ctx-ft-asc)
+  (ft-dsc ctx-ft-dsc)
+  (ft-hei ctx-ft-hei)
+  (ft-wid ctx-ft-wid)
+  ;;
+  (smp-id ctx-smp-id set-ctx-smp-id!)
+  (srf-id ctx-srf-id set-ctx-srf-id!)
+  (xrf-id ctx-xrf-id set-ctx-xrf-id!)
+  (top-id ctx-top-id set-ctx-top-id!)
+  ;;
+  (width ctx-width set-ctx-width!)
+  (height ctx-height set-ctx-height!)
+  (format ctx-format set-ctx-format!)
+  (port ctx-port)
+  (bvec ctx-bvec)
+  )
+
+(define (make-ctx . args)
+  (apply %make-ctx #t args))
+
+(define (ctx-changed! ctx)
+  (set-ctx-changed! ctx #t))
+(define (ctx-committed! ctx)
+  (set-ctx-changed! ctx #f))
+
+;; ====================================
+
+(define rq-chan #f)                     ; channel for requests to sender
+(define ev-chan #f)                     ; channel for events to model
+(define rq-iobuf #f)
+(define ev-iobuf #f)
+
+;; --- wl_display
+
+(define-wl-request wl_display sync callback)
+(define-wl-request wl_display get_registry registry)
+
+;; wl_display:error
+(define (handle-wl_display:error obj-id object_id code message)
+  (sferr "wl-error:~A:~A: ~A\n" object_id code message))
+
+;; wl_display:delete_id
+(define (handle-wl_display:delete_id obj-id id)
+  ;;(sferr "delete_id ~S\n" id)
+  ;;(vector-set! object-handlers-vec id #f)
+  (vector-set! object-value-vec id #f)
+  #f)
+
+;; --- wl_registry
+
+(define globals '())
+
+(define-wl-request wl_registry bind name interface version id)
+
+(define (bind-global interface)
+  (unless (string? interface) (error "bind-global wants string argument"))
+  (let* ((info (hash-ref registry interface)))
+    (cond
+     (info
+      (let* ((name (vector-ref info 0))
+             (version (vector-ref info 2))
+             (id (alloc-id))
+             (iface (string->symbol interface)))
+        (hashq-set! globals-dict iface id)
+        (set-object! id iface)
+        (wl_registry:bind registry-id name interface version id)
+        id))
+     (else
+      (sferr "no info for interface ~S\n" interface)
+      #f))))
+
+(define (handle-wl_registry:global obj-id name interface version)
+  (set! globals (cons interface globals))
+  (hash-set! registry interface (vector name interface version)))
+
+(define (handle-wl_registry:global_remove obj-id name)
+  ;;(sferr "global_removed: ~S\n" name)
+  (if #f #f))
+
+;; --- wl_callback
+
+(define (handle-wl_callback:done obj-id callback-data)
+  ;; callback-data is event serial generated by compositor
+  (let ((val (vector-ref object-value-vec obj-id)))
+    (if (condition? val) (signal-condition! val))
+    (vector-set! object-value-vec obj-id #f))
+  ;;(sferr "got callback for obj-id ~S w/ data ~S\n" obj-id callback-data)
+  (if #f #f))
+
+;; --- wl_compositor
+
+(define-wl-request wl_compositor create_surface id)
+(define-wl-request wl_compositor create_region id)
+
+;; --- wl_shm_pool
+
+(define-wl-request wl_shm_pool create_buffer
+  id offset width height stride format)
+(define-wl-request wl_shm_pool destroy)
+(define-wl-request wl_shm_pool resize size)
+
+;; --- wl_shm
+
+(define-wl-request wl_shm create_pool id fd size)
+
+;; informs of allowed formats (argb8888 = 0, xrgb8888 = 1)
+(define formats '())
+
+(define (handle-wl_shm:format obj-id format)
+  (set! formats (cons format formats)))
+
+;; --- wl_buffer
+
+(define-wl-request wl_buffer destroy)
+
+(define (handle-wl_buffer:release obj-id)
+  ;;(sferr "wl_buffer:release ~s\n" obj-id)
+  ;; actually, once released, we can reuse (i.e., assign back to dpy-id)
+  ;; FIXME: We should reuse and not destroy:
+  (wl_buffer:destroy obj-id)
+  (vector-set! object-value-vec obj-id #f))
+
+;; --- wl_data_offer
+
+;; --- wl_data_source
+
+;; --- wl_data_device
+
+;; --- wl_data_device_manager
+
+;; --- wl_shell
+
+;; --- wl_shell_surface
+
+;; --- wl_surface
+
+(define-wl-request wl_surface destroy)
+(define-wl-request wl_surface attach buffer x y)
+;;(define-wl-request wl_surface damage x y width height) deprecated
+(define-wl-request wl_surface frame callback)
+(define-wl-request wl_surface set_opaque_region region)
+(define-wl-request wl_surface set_input_region region)
+(define-wl-request wl_surface commit)
+(define-wl-request wl_surface set_buffer_transform transform)
+(define-wl-request wl_surface set_buffer_scale scale)
+(define-wl-request wl_surface damage_buffer x y width height)
+(define-wl-request wl_surface offset x y)
+
+(define (handle-wl_surface:enter obj-id output)
+  ;;(sferr "wl_surface:enter\n")
+  (if #f #f))
+
+(define (handle-wl_surface:leave obj-id output)
+  (sferr "wl_surface:leave\n")
+  (if #f #f))
+
+;; --- wl_seat
+
+(define-wl-request wl_seat get_pointer id)
+(define-wl-request wl_seat get_keyboard id)
+(define-wl-request wl_seat get_touch id)
+(define-wl-request wl_seat release)
+
+(define (handle-wl_seat:capabilities obj-id capabilities)
+  (define (cap? caps key)
+    (positive? (logior caps (assq-ref wl_seat:capability-enum key))))
+  (if (not (cap? capabilities 'keyboard)) (sferr "warning: no keyboard\n"))
+  (if (not (cap? capabilities 'pointer)) (sferr "warning: no pointer\n"))
+  (if (cap? capabilities 'touch) (sferr "got touch\n"))
+  (if #f #f))
+ 
+(define (handle-wl_seat:name obj-id name)
+  ;;(sferr "wl_seat:name ~S\n" name)
+  (if #f #f))
+ 
+;; --- wl_pointer
+
+;; on my laptop see lots of (motion,frame) sequences
+;; only get these events when pointer is in window
+
+(define mouse-x 0)
+(define mouse-y 0)
+(define mouse-b 0)
+
+(define-wl-request wl_pointer set_cursor serial surface hotspot_x hotspot_y)
+(define-wl-request wl_pointer release)
+
+(define (handle-wl_pointer:enter obj-id serial surface surface_x surface_y)
+  (sferr "pointer:enter\n")
+  (if #f #f))
+
+(define (handle-wl_pointer:leave obj-id serial surface)
+  (sferr "pointer:leave\n")
+  (if #f #f))
+
+(display "motion will be scaled down by factor of 250\n")
+;; ^ This seems undocumented and not something to be retrived from
+;;   the compositor.  I wonder if we should just set it. ??
+(define (handle-wl_pointer:motion obj-id time surface_x surface_y)
+  ;;(sferr "pointer:motion\n")
+  (set! mouse-x (quotient surface_x 250))
+  (set! mouse-y (quotient surface_y 250))
+  ;;(put-message ev-chan `(motion ,mouse-x ,mouse-y))
+  (if #f #f))
+
+(define (handle-wl_pointer:button obj-id serial time button state)
+  ;;(sferr "pointer:button ~S ~S\n" button state)
+  (put-message ev-chan (vector 'click mouse-x mouse-y))
+  (if #f #f))
+
+(define (handle-wl_pointer:axis obj-id time axis value)
+  (sferr "pointer:axis\n")
+  (if #f #f))
+
+(define (handle-wl_pointer:frame obj-id)
+  ;;(sferr "pointer:frame\n")
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_source obj-id axis_source)
+  (sferr "pointer:axis_source\n")
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_stop obj-id time axis)
+  (sferr "pointer:axis_stop\n")
+  (if #f #f))
+
+(define (handle-wl_pointer:axis_discrete obj-id axis discrete)
+   (sferr "pointer:axis_discrete\n")
+  (if #f #f))
+
+;; --- wl_keyboard
+
+;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Keymaps.html
+
+;;  emacs:
+;;    key  : shift control meta alt hyper super
+;;    mouse: click drag down
+
+(define kbd-mods 0)
+(define kbd-base-v #f)
+(define kbd-shft-v #f)
+;; (define (kbd-levels #f)
+;; (define (kbd-nlevel #f)
+
+(define (set-mod key)
+  (case key
+    ((S-) (set! kbd-mods (logior kbd-mods #x1000000))) ;; 2^25, shift
+    ((C-) (set! kbd-mods (logior kbd-mods #x2000000))) ;; 2^26, control
+    ((M-) (set! kbd-mods (logior kbd-mods #x4000000))) ;; 2^27, meta
+    ((A-) (set! kbd-mods (logior kbd-mods #x0200000))) ;; 2^22, alt
+    ((H-) (set! kbd-mods (logior kbd-mods #x0800000))) ;; 2^24, hyper
+    ((Z-) (set! kbd-mods (logior kbd-mods #x0400000))) ;; 2^23, super
+    (else #f)))
+
+(define (clr-mod key)
+  (case key
+    ((S-) (set! kbd-mods (logand kbd-mods #x6FFFFFF))) ;; 2^25, shift
+    ((C-) (set! kbd-mods (logand kbd-mods #x5FFFFFF))) ;; 2^26, control
+    ((M-) (set! kbd-mods (logand kbd-mods #x3FFFFFF))) ;; 2^27, meta
+    ((A-) (set! kbd-mods (logand kbd-mods #x7DFFFFF))) ;; 2^22, alt
+    ((H-) (set! kbd-mods (logand kbd-mods #x77FFFFF))) ;; 2^24, hyper
+    ((Z-) (set! kbd-mods (logand kbd-mods #x7BFFFFF))) ;; 2^23, super
+    (else #f)))
+
+(define mod-syms '(alt super hyper shift control meta))
+
+(define (uncap-mods mods)
+  (logand mods #x6FFFFFF))
+
+;; #\b #\B =>
+;;    (control #\b) on control+b 
+;;    (#\B) on shift+b 
+(define (encase/mods base shft)
+  (define (doit ksym mods)
+    (let loop ((seq (list ksym)) (mask #x0200000) (syms mod-syms))
+      (if (null? syms) (list->vector seq)
+          (loop (if (positive? (logand mask mods)) (cons (car syms) seq) seq)
+                (* 2 mask) (cdr syms)))))
+  (if (and (char? base) shft (positive? (logand kbd-mods #x1000000)))
+      (doit shft (uncap-mods kbd-mods))
+      (doit base kbd-mods)))
+      
+(define-wl-request wl_keyboard release)
+
+(define (handle-wl_keyboard:keymap obj-id format fd size)
+  ;;(sferr "got keymap obj ~A format ~A fd ~A size ~A\n" obj-id format fd size)
+  ;; ASSUME format is xkb
+  (let* ((size (1- size)) ;; trim trailing nul
+         (mem (mmap 0 size PROT_READ MAP_PRIVATE fd 0))
+         (kmpair (get-keymaps (utf8->string mem))))
+    (set! kbd-base-v (car kmpair))
+    (set! kbd-shft-v (cdr kmpair))
+    (close-fdes fd))
+  (if #f #f))
+
+(define (handle-wl_keyboard:enter obj-id serial surface keys)
+  ;; modifiers coming ...
+  (sferr "kb enter, keys = ~S\n" keys)
+  (if #f #f))
+
+(define (handle-wl_keyboard:leave obj-id serial surface)
+  (sferr "kb leave\n")
+  (if #f #f))
+
+(define (handle-wl_keyboard:key obj-id serial time key state)
+  ;;(fferr "mods: ~x\n" kbd-mods)
+  (let ((base (or (vector-ref kbd-base-v key) key))
+        (shft (or (vector-ref kbd-shft-v key) key)))
+    (if (zero? state)
+        (or (and (symbol? base) (clr-mod base))
+            (put-message ev-chan (encase/mods base shft)))
+        (or (and (symbol? base) (set-mod base))))
+    ;;(if (and (positive? state) (equal? base #\return)) (doit))
+    ;;(sferr "key ~A: ~S => ~S, ~A\n"(if (zero? state) "rel" "prs") key base)
+    (if #f #f)))
+
+(define (handle-wl_keyboard:modifiers obj-id serial
+                                      mods_depressed mods_latched mods_locked
+                                      group)
+  (unless (and (zero? mods_depressed) (zero? mods_latched))
+    (fferr "modifiers: prsd=0x~x lchd=0x~x grp=~s\n"
+           mods_depressed mods_latched group))
+  (if #f #f))
+
+(define (handle-wl_keyboard:repeat_info obj-id rate delay)
+  (if #f #f))
+
+;; --- wl_touch
+
+(define (handle-wl_touch:down obj-id serial time surface id x y)
+  (sferr "touch:down \n")
+  (if #f #f))
+
+(define (handle-wl_touch:up obj-id serial time id)
+  (sferr "touch:up \n")
+  (if #f #f))
+
+(define (handle-wl_touch:motion obj-id time id x y)
+  (sferr "touch:motion \n")
+  (if #f #f))
+
+(define (handle-wl_touch:frame obj-id id x y)
+  (sferr "touch:frame \n")
+  (if #f #f))
+
+(define (handle-wl_touch:cancel obj-id)
+  (sferr "touch:cancel \n")
+  (if #f #f))
+
+(define-wl-request wl_touch release)
+
+(define (handle-wl_touch:shape obj-id id major minor)
+  (sferr "touch:shape \n")
+  (if #f #f))
+
+(define (handle-wl_touch:orientation obj-id id orientation)
+  (sferr "touch:orientation \n")
+  (if #f #f))
+
+
+;; --- wl_output
+
+(define (handle-wl_output:geometry obj-id x y physical_width physical_height
+                                   subpixel make model transform)
+  ;;(sferr "output::geometry called\n")
+  (if #f #f))
+
+(define (handle-wl_output:mode obj-id flags width height refresh)
+  ;;(sferr "output::mode called\n")
+  (if #f #f))
+
+(define (handle-wl_output:done . args)
+  ;;(sferr "output::done called\n")
+  (if #f #f))
+  
+(define (handle-wl_output:scale . args)
+  ;;(sferr "output::scale called\n")
+  (if #f #f))
+  
+(define-wl-request wl_output release)
+  
+(define (handle-wl_output:name . args)
+  ;;(sferr "output::name called\n")
+  (if #f #f))
+  
+(define (handle-wl_output:description . args)
+  ;;(sferr "output::description called\n")
+  (if #f #f))
+  
+;; --- wl_region
+
+;; --- wl_subcompositor
+
+;; --- wl_subsurface
+
+;; --- xdg_wm_base
+
+(define-wl-request xdg_wm_base destroy)
+(define-wl-request xdg_wm_base create_positioner id)
+(define-wl-request xdg_wm_base get_xdg_surface id surface)
+(define-wl-request xdg_wm_base pong serial)
+
+(define (handle-xdg_wm_base:ping obj-id serial)
+  ;;(sferr "xdg_wm_base:ping -> pong\n")
+  (xdg_wm_base:pong obj-id serial))
+
+;; --- xdg_positioner
+
+(define-wl-request xdg_positioner destroy)
+(define-wl-request xdg_positioner set_size width height)
+(define-wl-request xdg_positioner set_anchor_rect x y width height)
+(define-wl-request xdg_positioner set_gravity gravity)
+(define-wl-request xdg_positioner set_constraint_adjustment
+  constraint_adjustment)
+(define-wl-request xdg_positioner set_offset x y)
+(define-wl-request xdg_positioner set_reactive)
+(define-wl-request xdg_positioner set_parent_size parent_width parent_height)
+(define-wl-request xdg_positioner set_parent_configure serial)
+
+;; --- xdg_surface
+
+(define-wl-request xdg_surface destroy)
+(define-wl-request xdg_surface get_toplevel id)
+(define-wl-request xdg_surface get_popup id parent positioner)
+(define-wl-request xdg_surface set_window_geometry x y width height)
+(define-wl-request xdg_surface ack_configure serial)
+            
+(define (handle-xdg_surface:configure obj-id serial)
+  (xdg_surface:ack_configure obj-id serial) ; before or after?
+  (let ((obj (vector-ref object-value-vec obj-id)))
+    (cond
+     ((ctx? obj) (xrf-config obj))
+     ((procedure? obj) (obj obj-id))
+     (else #f))))
+
+;; --- xdg_toplevel
+
+(define-wl-request xdg_toplevel destroy)
+(define-wl-request xdg_toplevel set_parent parent)
+(define-wl-request xdg_toplevel set_title title)
+(define-wl-request xdg_toplevel set_app_id app_id)
+(define-wl-request xdg_toplevel show_window_menu seat serial x y)
+(define-wl-request xdg_toplevel move seat serial)
+(define-wl-request xdg_toplevel resize seat serial edges)
+(define-wl-request xdg_toplevel set_max_size width height)
+(define-wl-request xdg_toplevel set_min_size width height)
+(define-wl-request xdg_toplevel set_maximized)
+(define-wl-request xdg_toplevel unset_maximized)
+(define-wl-request xdg_toplevel set_fullscreen output)
+(define-wl-request xdg_toplevel unset_fullscreen)
+(define-wl-request xdg_toplevel set_minimized)
+
+(define (handle-xdg_toplevel:configure obj-id width height states)
+  ;; states in an array:
+  ;;(sferr "FIXME! toplevel:configure wid=~S hei=~S\n" width height)
+  ;;(sferr "  states=~S\n" states)
+  (if #f #f))
+ 
+(define (handle-xdg_toplevel:close obj-id width height states)
+  (sferr "FIXME! toplevel:close ~S ~S\n" width height)
+  (sferr "  states=~S\n" states)
+  (if #f #f))
+
+(define (handle-xdg_toplevel:configure_bounds obj-id width height)
+  ;; hint for largest area : sent before configure event
+  ;;(sferr "toplevel:configure_bounds wid=~S hei=~S\n" width height)
+  (if #f #f))
+
+;; --- xdg_popup
+
+
+;; --- install
+
+(define (install-handlers)
+  (wl-event wl_display error)
+  (wl-event wl_display delete_id)
+  (wl-event wl_registry global)
+  (wl-event wl_registry global_remove)
+  (wl-event wl_callback done)
+  (wl-event wl_shm format)
+  (wl-event wl_buffer release)
+  (wl-event wl_surface enter)
+  (wl-event wl_surface leave)
+  (wl-event wl_seat capabilities)
+  (wl-event wl_seat name)
+  (wl-event wl_pointer enter)
+  (wl-event wl_pointer leave)
+  (wl-event wl_pointer motion)
+  (wl-event wl_pointer button)
+  (wl-event wl_pointer axis)
+  (wl-event wl_pointer frame)
+  (wl-event wl_pointer axis_source)
+  (wl-event wl_pointer axis_stop)
+  (wl-event wl_pointer axis_discrete)
+  (wl-event wl_keyboard keymap)
+  (wl-event wl_keyboard enter)
+  (wl-event wl_keyboard leave)
+  (wl-event wl_keyboard key)
+  (wl-event wl_keyboard modifiers)
+  (wl-event wl_keyboard repeat_info)
+  (wl-event wl_touch down)
+  (wl-event wl_touch up)
+  (wl-event wl_touch motion)
+  (wl-event wl_touch frame)
+  (wl-event wl_touch cancel)
+  (wl-event wl_touch shape)
+  (wl-event wl_touch orientation)
+  (wl-event wl_output geometry)
+  (wl-event wl_output mode)
+  (wl-event wl_output done)
+  (wl-event wl_output scale)
+  (wl-event wl_output name)
+  (wl-event wl_output description)
+
+  (wl-event xdg_wm_base ping)
+  (wl-event xdg_surface configure)
+  (wl-event xdg_toplevel configure)
+  (wl-event xdg_toplevel close)
+  (wl-event xdg_toplevel configure_bounds)
+
+  (if #f #f))
+
+(define (init-object-pool)
+  (set-object! display-id 'wl_display)
+  (set-object! registry-id 'wl_registry))
+  
+(define (sync-and-wait)
+  (let ((id (alloc-id)) (cd (make-condition)))
+    (set-object! id 'wl_callback cd)
+    (wl_display:sync display-id id)
+    (wait cd)))
+
+;; (define-syntax atomic-sequence ...
+;;    (encode-foo x y z) (encode-
+;;    (put-message rq-chan msgs)
+;;;   (sync)
+;;;   (wait)
+
+(define shm-id #f)
+(define comp-id #f)
+(define seat-id #f)
+(define base-id #f)
+
+(define (get-registry)
+  (wl_display:get_registry display-id registry-id))
+
+(define (init-globals)
+  (unless comp-id (set! comp-id (bind-global "wl_compositor")))
+  (unless shm-id (set! shm-id (bind-global "wl_shm")))
+  (unless seat-id (set! seat-id (bind-global "wl_seat")))
+  (unless base-id (set! base-id (bind-global "xdg_wm_base")))
+  #t)
+
+;; === agents ========================
+
+(define wl-sock #f)
+(define io-debug #f)
+
+(define socket-path
+  (let ((dir (getenv "XDG_RUNTIME_DIR"))
+	(dpy (getenv "WAYLAND_DISPLAY")))
+    (and dir dpy (string-append dir "/" dpy))))
+
+(define (connect-display)
+  (let* ((path socket-path)
+         (style (logior SOCK_STREAM SOCK_CLOEXEC))
+         (sock (socket PF_UNIX style 0))
+         (conn (connect sock AF_UNIX path)))
+    ;;(setvbuf sock 'none)
+    (fcntl sock F_SETFL (logior O_NONBLOCK (fcntl sock F_GETFL)))
+    (set! rq-iobuf (make-bytevector 1024))
+    (set! ev-iobuf (make-bytevector 1024))
+    sock))
+
+(define (sender)
+  (sferr "sender starting ...\n")
+  (let loop ((n-sent 0) (n-left 0) (cm #f) (rqq '()))
+    (fsleep 0.01)
+    (cond
+     ((positive? n-left)
+      (when io-debug
+        (if cm
+            (sferr "S: sending ~S bytes w/ fd=~A:\n" n-left (dec-fd cm))
+            (sferr "S: sending ~S bytes:\n" n-left))
+        (if (<= n-left 32)
+            (sferr "   ~A\n" (fmtbv/x rq-iobuf n-sent n-left 4))
+            (sferr "   ~A ...\n" (fmtbv/x rq-iobuf n-sent 32 4))))
+      (let ((n (sendmsg wl-sock rq-iobuf n-sent n-left cm)))
+        (when io-debug "  n-sent:~S n-left:~S n:~S\n" n-sent n-left n)
+        (loop (+ n-sent n) (- n-left n) #f rqq)))
+     ((pair? rqq)
+      (call-with-values (car rqq) 
+        (lambda (ln cm)
+          (when io-debug (sferr "S: stage msg  ln ~S  cm ~S\n" ln cm))
+          (loop 0 ln cm (cdr rqq)))))
+     ((get-message rq-chan) =>
+      (lambda (req)
+        (when io-debug (sferr "S: queue msg  ~S queued\n" (1+ (length rqq))))
+        (loop n-sent n-left cm (cons req rqq))))
+     (else
+      (sferr "sender says wtf\n")))))
+
+(define (receiver)
+  (sferr "receiver starting ...\n")
+  (let loop ((n-have 0) (object-id #f) (msg-size 8) (opcode #f) (control #f))
+    (cond
+     ((< n-have msg-size)
+      (let* ((res (recvmsg! wl-sock ev-iobuf n-have))
+             (n-read (vector-ref res 0))
+             (control (or control (vector-ref res 1)))
+             (flags (vector-ref res 2)))
+        ;;(when io-debug (if (positive? n-read) (sferr "recv ~S B\n" n-read)))
+        (when (zero? n-read) (fsleep 0.1)) ; SLEEP HERE
+        (loop (+ n-have n-read) object-id msg-size opcode control)))
+     ((not object-id)
+      (let* ((object-id (bytevector-u32-native-ref ev-iobuf 0))
+             (word1 (bytevector-u32-native-ref ev-iobuf 4))
+             (msg-size (bytevector-u16-native-ref ev-iobuf msg-size-offset))
+             (opcode (bytevector-u16-native-ref ev-iobuf opcode-offset)))
+        (loop n-have object-id msg-size opcode control)))
+     (else
+      (when io-debug (sferr "R: dispatch ~S ~S\n" object-id opcode))
+      (dispatch object-id opcode ev-iobuf 8 control)
+      (cond
+       ((> n-have msg-size)
+        (bytevector-copy! ev-iobuf msg-size ev-iobuf 0 (- n-have msg-size))
+        (loop (- n-have msg-size) #f 8 opcode control))
+       (else
+        (loop (- n-have msg-size) #f 8 opcode #f)))))))
+
+(define (monitor)
+  (sferr "monitor starting ...\n")
+  (let* ((server (spawn-coop-repl-server)))
+    (let loop ()
+      (poll-coop-repl-server server)
+      (yield-current-task)
+      (fsleep 0.1)
+      (loop))))
+
+(define done-cond #f)
+
+(define (done)
+  (and done-cond (signal-condition! done-cond)))
+
+
+
+;; === appl ===========================
+
+;; move starts with xdg_toplevel:move
+
+(use-modules (ffi ffi-help-rt))
+(use-modules (ffi cairo))
+
+(define appl-ctx #f)
+(define appl-kbd-id #f)
+(define appl-ptr-id #f)
+(define appl-tch-id #f)
+
+(define (wl-format->cairo wlf)
+  (case wlf
+    ((0 argb8888) 'CAIRO_FORMAT_ARGB32)
+    ((1 xrgb8888) 'CAIRO_FORMAT_RGB24)))
+
+(define argb8888 0)
+(define xrgb8888 1)
+
+(define gran #x100000)                  ; bufsize granularity
+
+(define deg (/ M_PI 180.0))
+
+(define (draw-pane-1 cr wid hei)
+  (let* ((lw/2 1.0) (bar 44.0) (rad 16.0))
+    (cairo_save cr)
+    ;; bottom
+    (cairo_move_to cr lw/2 bar)
+    (cairo_line_to cr (- wid lw/2) bar)
+    (cairo_line_to cr (- wid lw/2) (- hei lw/2))
+    (cairo_line_to cr lw/2 (- hei lw/2))
+    (cairo_close_path cr)
+    (cairo_set_source_rgb cr 0.9 0.9 0.9)
+    (cairo_fill_preserve cr)
+    (cairo_set_line_width cr (* 2 lw/2))
+    (cairo_set_source_rgb cr 0.1 0.1 0.1)
+    (cairo_stroke cr)
+    ;; top
+    (cairo_move_to cr lw/2 bar)
+    (cairo_line_to cr lw/2 (+ rad lw/2))
+    (cairo_arc cr (+ rad lw/2) (+ rad lw/2) rad (* -180.0 deg) (* -90.0 deg))
+    (cairo_line_to cr (- wid rad lw/2) lw/2)
+    (cairo_arc cr (- wid rad lw/2) (+ rad lw/2) rad (* -90.0 deg) (* 0.0 deg))
+    (cairo_line_to cr (- wid lw/2) bar)
+    (cairo_close_path cr)
+    (cairo_set_source_rgb cr 0.6 0.6 0.6)
+    (cairo_fill_preserve cr)
+    (cairo_set_line_width cr (* 2 lw/2))
+    (cairo_set_source_rgb cr 0.1 0.1 0.1)
+    (cairo_stroke cr)
+    ;; text
+    (let* ((title "geemacs")
+           (face "serif")
+           (slant 'CAIRO_FONT_SLANT_NORMAL)
+           (weight 'CAIRO_FONT_WEIGHT_NORMAL)
+           (ftsize 20.0)
+           (extents (make-cairo_text_extents_t))
+           (wid/2 (/ wid 2.0))
+           (bar/2 (/ bar 2.0))
+           )
+      (cairo_select_font_face cr face slant weight)
+      (cairo_set_font_size cr ftsize)
+      (cairo_text_extents cr title (pointer-to extents))
+      ;; bearing is vector from start of text on baseline
+      ;; to upper left corner of bounding box
+      (cairo_move_to cr
+                     (+ wid/2 (fh-object-ref extents 'x_bearing)
+                        (- (/ (fh-object-ref extents 'width) 2.0)))
+                     (+ bar/2
+                        (/ (fh-object-ref extents 'height) 2.0)))
+      (cairo_show_text cr title))
+    ;;
+    (cairo_restore cr)))
+
+(define draw-pane draw-pane-1)
+
+(define (init-cr-txt cr)
+  (let ((face "monospace")
+        (slant 'CAIRO_FONT_SLANT_NORMAL)
+        (weight 'CAIRO_FONT_WEIGHT_NORMAL)
+        (extents (make-cairo_font_extents_t)))
+    (cairo_select_font_face cr face slant weight)
+    (cairo_set_font_size cr 16.0)
+    (cairo_font_extents cr (pointer-to extents))
+    extents))
+
+(define (appl-init width height format)
+  (let* ((format (if (symbol? format) (assq-ref wl_shm:format-enum format)))
+         (stride (* width 4))
+         (size (* stride height))
+         (bufsize (* gran (quotient (+ (* 2 size) (1- gran)) gran)))
+         (port (let ((port (tmpfile))) (truncate-file port bufsize) port))
+         (fd (port->fdes port))
+         (bv (mmap 0 bufsize (logior PROT_READ PROT_WRITE) MAP_SHARED fd 0))
+         (smp-id (gen-id-using (wl_shm:create_pool shm-id <> fd bufsize)))
+         (srf-id (gen-id-using (wl_compositor:create_surface comp-id <>)))
+         (xrf-id (gen-id-using (xdg_wm_base:get_xdg_surface base-id <> srf-id)))
+         (top-id (gen-id-using (xdg_surface:get_toplevel xrf-id <>)))
+         (dpy-ix 0)
+         (drw-ix size)
+         (dpy-cr (let* ((buffer (bytevector->pointer bv dpy-ix))
+                        (format (wl-format->cairo format))
+                        (srf (cairo_image_surface_create_for_data
+                              buffer format width height stride)))
+                   (cairo_create srf)))
+         (drw-cr (let* ((buffer (bytevector->pointer bv drw-ix))
+                        (format (wl-format->cairo format))
+                        (srf (cairo_image_surface_create_for_data
+                              buffer format width height stride)))
+                   (cairo_create srf)))
+         (extents (init-cr-txt dpy-cr))
+         (ft-asc (fh-object-ref extents 'ascent))
+         (ft-dsc (fh-object-ref extents 'descent))
+         (ft-hei (fh-object-ref extents 'height))
+         (ft-wid (fh-object-ref extents 'max_x_advance))
+         (ctx (make-ctx port bv
+                        width height format
+                        smp-id srf-id xrf-id top-id
+                        dpy-ix drw-ix dpy-cr drw-cr
+                        ft-asc ft-dsc ft-hei ft-wid)))
+    (init-cr-txt drw-cr)
+    ;;
+    #|
+    (let ((ux (make-double)) (uy (make-double)))
+      (cairo_device_to_user_distance dpy-cr (pointer-to ux) (pointer-to uy))
+      (sferr "ux=~S yu=~S\n" (fh-object-ref ux) (fh-object-ref uy)))
+    |#
+    (cond
+     (#f
+      (cairo_set_source_rgb dpy-cr 0.9 0.9 0.9)
+      (cairo_paint dpy-cr)
+      (cairo_set_source_rgb drw-cr 0.9 0.9 0.9)
+      (cairo_paint drw-cr))
+     (#f ;; not working :(
+      (draw-pane dpy-cr 500.0 300.0)
+      (draw-pane drw-cr 500.0 300.0)))
+    ;;
+    ;;(bytevector-fill! bv #xee)  ;; <= KLUDGE : use set_source_rgb + fill
+    (set-object! smp-id 'wl_shm_pool ctx)
+    (set-object! srf-id 'wl_surface ctx)
+    (set-object! xrf-id 'xdg_surface ctx)
+    (set-object! top-id 'xdg_toplevel ctx)
+    (ctx-changed! ctx)
+    ctx))
+
+(define get-text
+  (let* ((cx 0)
+         (text (vector "a good day, I'd say,"
+                       "when the wine is red,"
+                       "and the code is working"
+                       "I could go like this more"
+                       "so could you, I guess"
+                       ))
+         (ln (vector-length text)))
+    (lambda ()
+      (let ((ix cx))
+        (set! cx (remainder (1+ cx) ln))
+        (vector-ref text ix)))))
+
+(define lbr-bw 2.0)                   ; left/bottom/right border width
+(define tx-pad 4.0)
+
+(define (doit ctx)
+  (ctx-changed! ctx)
+  (wl_surface:damage_buffer (ctx-srf-id ctx) 0 0 500 300)
+  (xrf-config ctx)
+  ctx)
+
+(define (draw-buffer ctx)
+  (sferr "draw-buffer\n")
+  (let* ((cr (ctx-drw-cr ctx))
+         (width (ctx-width ctx))
+         (height (ctx-height ctx))
+         (base-x (+ lbr-bw tx-pad))
+         (base-y (- height lbr-bw tx-pad (ctx-ft-dsc ctx)))
+         (txhei (ctx-ft-hei ctx))
+         (text (get-text)))
+    (draw-pane cr width height)
+    
+    (when #f
+      (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))
+        (cairo_save cr)
+        (cairo_set_source_surface cr dpy-srf 2.0 (- txhei))
+        (cairo_rectangle cr 2.0 (- base-y txhei)
+                         (- height 4.0) (- 300.0 base-y txhei))
+        (cairo_fill cr)
+        (cairo_restore cr)))
+    
+    ;; write text
+    (cairo_set_source_rgb cr 0.0 0.0 0.0)
+    (cairo_move_to cr base-x base-y)
+    (cairo_show_text cr text)
+    (if #f #f)))
+
+;; read xdg_surface description in xdg-shell.xml
+(define (create-it ctx)
+  (let* ((width (ctx-width ctx))
+         (height (ctx-height ctx))
+         (top-id (ctx-top-id ctx))
+         (srf-id (ctx-srf-id ctx)))
+    (xdg_toplevel:set_title top-id "wl-play")
+    (xdg_toplevel:set_max_size top-id width height)
+    (xdg_toplevel:set_min_size top-id width height)
+    (wl_surface:commit srf-id)
+    (if #f #f)))
+  
+;; This gets called in response to xdg_surface:configure event.
+
+;; This is executed in the context of the receiver task.
+(define (xrf-config ctx)
+  (sferr "xrf-config\n")
+  (let ((srf-id (ctx-srf-id ctx)))
+    (if (ctx-changed? ctx)
+        (let* ((smp-id (ctx-smp-id ctx))
+               (drw-ix (ctx-drw-ix ctx))
+               (drw-id (let* ((width (ctx-width ctx))
+                              (height (ctx-height ctx))
+                              (stride (* 4 width))
+                              (format (ctx-format ctx)))
+                         (gen-id-using
+                          (wl_shm_pool:create_buffer
+                           smp-id <> drw-ix width height stride format))))
+               (dpy-ix (ctx-dpy-ix ctx))
+               (dpy-cr (ctx-dpy-cr ctx))
+               (drw-cr (ctx-drw-cr ctx)))
+          (set-object! drw-id 'wl_buffer ctx)
+          ;; What if events occur between draw-buffer and committed?
+          (draw-buffer ctx)
+          (wl_surface:attach srf-id drw-id 0 0)
+          ;; --- damage request may go here ---
+          ;; buffer swap
+          (set-ctx-drw-cr! ctx dpy-cr)
+          (set-ctx-dpy-cr! ctx drw-cr)
+          (set-ctx-drw-ix! ctx dpy-ix)
+          (set-ctx-dpy-ix! ctx drw-ix)
+          ;; wait for release?
+          (ctx-committed! ctx)))
+    (wl_surface:commit srf-id)))
+
+(define (model)
+  (sferr "model starting ...\n")
+  (let loop ((ctx appl-ctx)             ; context
+             (evq '()))                 ; event queue
+    (cond
+     ((pair? evq)
+      (let* ((ev (car evq)) (type (vector-ref ev 0)))
+        (cond
+         ((eq? type #\return)
+          (loop (doit ctx) (cdr evq)))
+         ((eq? type 'click)
+          (sferr "clicked at ~S ~S\n" (vector-ref ev 1) (vector-ref ev 2))
+          (when (< (vector-ref ev 2) 40)
+            (sferr "starting move ...\n")
+            (xdg_toplevel:move (ctx-top-id ctx) seat-id 0)) ;; tried 1 4
+          (loop ctx (cdr evq)))
+         
+         (else
+          (sferr "ev: ~S\n" ev)
+          (loop ctx (cdr evq))))))
+      
+     ((get-message ev-chan) =>
+      (lambda (evt)
+        (loop ctx (cons evt evq))))
+     (else
+      (sferr "model says wtf\n")))))
+
+(define (appl-main)
+  (run-fibers
+   (lambda ()
+     (set! wl-sock (connect-display))
+     (set! rq-chan (make-channel))
+     (set! ev-chan (make-channel))
+     (set! done-cond (make-condition))
+
+     (install-handlers)
+     (init-object-pool)
+     (spawn-fiber receiver)
+     (spawn-fiber sender)
+     ;;
+     (get-registry)
+     (sync-and-wait)
+     (init-globals)
+     (sync-and-wait)
+     ;;
+     (let* ((width 500) (height 300) (format 'argb8888)
+            (ctx (appl-init width height format)))
+       (set! appl-ctx ctx)
+       (create-it ctx)
+       (set! appl-ptr-id                ; not sure ptr-id is ever needed
+             (add-id 'wl_pointer appl-ctx (wl_seat:get_pointer seat-id <>)))
+       (set! appl-kbd-id                ; not sure kbd-id is ever needed
+             (add-id 'wl_keyboard appl-ctx (wl_seat:get_keyboard seat-id <>)))
+       #|
+       |#
+       #| instantly crashes the gdm user session on 20.10, and gdm on 20.04
+       (set! appl-tch-id
+             (add-id 'wl_touch appl-ctx (wl_seat:get_touch seat-id <>))))
+       |#
+       (sferr "wl_seat = ~S\n" seat-id))
+     (spawn-fiber model)
+     ;;
+     (sync-and-wait)
+     (spawn-fiber monitor)
+     (fsleep 0.1)
+     (sferr "\n    telnet localhost 37146\n\n")
+     ;;
+     (if (> (length (program-arguments)) 1)
+         (wait done-cond)
+         (fsleep 10.0))
+     (force-output (current-error-port))
+     (when #f
+       (let* ((rd (map (lambda (p) (cons (cdr p) (car p))) wl_shm:format-enum))
+              (fx (map (lambda (f) (assq-ref rd f)) formats)))
+         (pperr fx)))
+     (close-port wl-sock))
+   #:hz 0 #:parallelism 1 #:install-suspendable-ports? #t))
+
+(appl-main)
+
+;; --- last line ---
