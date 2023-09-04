@@ -24,8 +24,8 @@
             msg-size-offset opcode-offset
             wl-index-dict wl-opcode-dict-vec
             wl-decoder-vec-vec make-wl-handler-vec-vec)
-  #:declarative? #f
-  #:use-module (sockmsg))
+  #:declarative? #f)
+(use-modules (extras))
 (use-modules (srfi srfi-11))
 (use-modules (rnrs bytevectors))
 (use-modules (system foreign))
