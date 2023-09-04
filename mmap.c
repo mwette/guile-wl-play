@@ -52,11 +52,25 @@ scm_atomic_compare_and_swap_uint32 (uint32_t *loc, uint32_t *expected,
   return atomic_compare_exchange_weak (a_loc, expected, desired);
 }
 
+struct mman_util {
+  char *mem;				/* pointer */
+  size_t off;				/* offset */
+  size_t len;				/* length */
+};
+
+static SCM fzr_htab;
+
 static void
 mmap_finalizer (void *ptr)
 {
 #if 1
   fprintf(stderr, "mmap_finializer can't run becuase size is unknown\n");
+#elif 1
+  struct mman_util *util = ptr;
+
+  SCM_SYSCALL (rv = munmap(util->mem + util->off, util->len));
+  if (rv != 0)
+    scm_misc_error ("mmap", "failed to munmap memory", SCM_EOL);
 #else
   SCM bvec;
   void *c_addr;
@@ -183,6 +197,7 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
   int c_prot, c_flags, c_fd;
   scm_t_off c_offset;
   SCM pointer, bvec;
+  //struct mman_util *util;
 
   if (SCM_POINTER_P (addr))
     c_addr = SCM_POINTER_VALUE (addr);
@@ -236,9 +251,10 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
   pointer = scm_from_pointer ((signed char *) c_mem, mmap_finalizer);
   bvec = scm_pointer_to_bytevector (pointer, len, offset,
 				    scm_from_locale_symbol("vu8"));
-  //finalizer
 
-  //scm_dynwind_end ();
+  //util = VECTOR(2) off and len
+  //scm_hash_set_x (mman_htab, util);
+
   return bvec;
 }
 #undef FUNC_NAME
@@ -366,6 +382,8 @@ scm_init_mmap(void) {
 #endif
   
   scm_c_define_gsubr (s_scm_mmap, 2, 4, 0, (scm_t_subr) scm_mmap);
+
+  fzr_htab = scm_c_make_hash_table (23);
 }
 
 /* --- last line --- */

@@ -1097,6 +1097,8 @@ exec $GDB_PFX guile $0 "$@"
   (xrf-config ctx)
   ctx)
 
+(define rot 0.0)
+
 (define (draw-buffer ctx)
   (sferr "draw-buffer\n")
   (let* ((cr (ctx-drw-cr ctx))
@@ -1107,7 +1109,7 @@ exec $GDB_PFX guile $0 "$@"
          (txhei (ctx-ft-hei ctx))
          (text (get-text)))
     (draw-pane cr width height)
-    
+
     (when #f
       (let ((dpy-srf (cairo_get_target (ctx-dpy-cr ctx))))
         (cairo_save cr)
@@ -1116,7 +1118,33 @@ exec $GDB_PFX guile $0 "$@"
                          (- height 4.0) (- 300.0 base-y txhei))
         (cairo_fill cr)
         (cairo_restore cr)))
-    
+
+    (when #t ;; nuke sign
+      (cairo_save cr)
+      (let* ((x 100.0) (y 100.0) (wid 50.0) (hei 50.0)
+             (sz (min wid hei))
+             (radius 0.3) (dashes (make-double (/ (* radius M_PI) 3.0))))
+        (set! rot (+ rot 0.175))
+        (cairo_translate cr x y)
+        (cairo_scale cr sz sz)
+        (cairo_move_to cr -1.0 -1.0)
+        (cairo_line_to cr -1.0 +1.0)
+        (cairo_line_to cr +1.0 +1.0)
+        (cairo_line_to cr +1.0 -1.0)
+        (cairo_close_path cr)
+        (cairo_set_source_rgb cr 1.0 1.0 0.0)
+        (cairo_fill cr)
+        (cairo_set_source_rgb cr 0.0 0.0 0.0)
+        (cairo_rotate cr rot)
+        (cairo_arc cr 0.0 0.0 0.1 (- M_PI)  M_PI)
+        (cairo_fill cr)
+        (cairo_set_line_width cr radius)
+        (cairo_set_dash cr (pointer-to dashes) 1 0.0)
+        (cairo_arc cr 0.0 0.0 radius (- M_PI) M_PI)
+        (cairo_stroke cr)
+        )
+      (cairo_restore cr))
+
     ;; write text
     (cairo_set_source_rgb cr 0.0 0.0 0.0)
     (cairo_move_to cr base-x base-y)
