@@ -37,12 +37,14 @@
     ;; wl_shell_surface
     ((ping . 0) (configure . 1) (popup_done . 2))
     ;; wl_surface
-    ((enter . 0) (leave . 1))
+    ((enter . 0) (leave . 1) (preferred_buffer_scale . 2) 
+     (preferred_buffer_transform . 3))
     ;; wl_seat
     ((capabilities . 0) (name . 1))
     ;; wl_pointer
     ((enter . 0) (leave . 1) (motion . 2) (button . 3) (axis . 4) 
-     (frame . 5) (axis_source . 6) (axis_stop . 7) (axis_discrete . 8))
+     (frame . 5) (axis_source . 6) (axis_stop . 7) (axis_discrete . 8) 
+     (axis_value120 . 9) (axis_relative_direction . 10))
     ;; wl_keyboard
     ((keymap . 0) (enter . 1) (leave . 2) (key . 3) (modifiers . 4) 
      (repeat_info . 5))
@@ -131,7 +133,7 @@
       "event decoder for wl_data_source:send"
       (let*-values
         (((mime_type ix) (dec-string bv ix))
-         ((fd) (dec-fd cm)))
+         ((fd ix) (values (dec-fd cm) ix)))
         (values obj-id mime_type fd)))
     (lambda (obj-id bv ix cm)
       "event decoder for wl_data_source:cancelled"
@@ -208,7 +210,17 @@
       "event decoder for wl_surface:leave"
       (let*-values
         (((output ix) (dec-u32 bv ix)))
-        (values obj-id output))))
+        (values obj-id output)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for wl_surface:preferred_buffer_scale"
+      (let*-values
+        (((factor ix) (dec-s32 bv ix)))
+        (values obj-id factor)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for wl_surface:preferred_buffer_transform"
+      (let*-values
+        (((transform ix) (dec-u32 bv ix)))
+        (values obj-id transform))))
    (vector
     (lambda (obj-id bv ix cm)
       "event decoder for wl_seat:capabilities"
@@ -281,13 +293,25 @@
       (let*-values
         (((axis ix) (dec-u32 bv ix))
          ((discrete ix) (dec-s32 bv ix)))
-        (values obj-id axis discrete))))
+        (values obj-id axis discrete)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for wl_pointer:axis_value120"
+      (let*-values
+        (((axis ix) (dec-u32 bv ix))
+         ((value120 ix) (dec-s32 bv ix)))
+        (values obj-id axis value120)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for wl_pointer:axis_relative_direction"
+      (let*-values
+        (((axis ix) (dec-u32 bv ix))
+         ((direction ix) (dec-u32 bv ix)))
+        (values obj-id axis direction))))
    (vector
     (lambda (obj-id bv ix cm)
       "event decoder for wl_keyboard:keymap"
       (let*-values
         (((format ix) (dec-u32 bv ix))
-         ((fd) (dec-fd cm))
+         ((fd ix) (values (dec-fd cm) ix))
          ((size ix) (dec-u32 bv ix)))
         (values obj-id format fd size)))
     (lambda (obj-id bv ix cm)
@@ -434,8 +458,8 @@
         (make-vector 0 #f) (make-vector 0 #f) (make-vector 1 #f) 
         (make-vector 1 #f) (make-vector 3 #f) (make-vector 6 #f) 
         (make-vector 6 #f) (make-vector 0 #f) (make-vector 0 #f) 
-        (make-vector 3 #f) (make-vector 2 #f) (make-vector 2 #f) 
-        (make-vector 9 #f) (make-vector 6 #f) (make-vector 7 #f) 
+        (make-vector 3 #f) (make-vector 4 #f) (make-vector 2 #f) 
+        (make-vector 11 #f) (make-vector 6 #f) (make-vector 7 #f) 
         (make-vector 6 #f) (make-vector 0 #f) (make-vector 0 #f) 
         (make-vector 0 #f)))
 
@@ -492,7 +516,12 @@
     (p016 . #x36313050) (axbxgxrx106106106106 . #x30314241) 
     (nv15 . #x3531564e) (q410 . #x30313451) (q401 . #x31303451) 
     (xrgb16161616 . #x38345258) (xbgr16161616 . #x38344258) 
-    (argb16161616 . #x38345241) (abgr16161616 . #x38344241)))
+    (argb16161616 . #x38345241) (abgr16161616 . #x38344241) 
+    (c1 . #x20203143) (c2 . #x20203243) (c4 . #x20203443) (d1 . #x20203144) 
+    (d2 . #x20203244) (d4 . #x20203444) (d8 . #x20203844) (r1 . #x20203152) 
+    (r2 . #x20203252) (r4 . #x20203452) (r10 . #x20303152) 
+    (r12 . #x20323152) (avuy8888 . #x59555641) (xvuy8888 . #x59555658) 
+    (p030 . #x30333050)))
 
 (define-public wl_data_offer:error-enum
   '((invalid_finish . 0) (invalid_action_mask . 1) (invalid_action . 2) 
@@ -502,7 +531,7 @@
   '((invalid_action_mask . 0) (invalid_source . 1)))
 
 (define-public wl_data_device:error-enum
-  '((role . 0)))
+  '((role . 0) (used_source . 1)))
 
 (define-public wl_data_device_manager:dnd_action-enum
   '((none . 0) (copy . 1) (move . 2) (ask . 4)))
@@ -522,7 +551,7 @@
 
 (define-public wl_surface:error-enum
   '((invalid_scale . 0) (invalid_transform . 1) (invalid_size . 2) 
-    (invalid_offset . 3)))
+    (invalid_offset . 3) (defunct_role_object . 4)))
 
 (define-public wl_seat:capability-enum
   '((pointer . 1) (keyboard . 2) (touch . 4)))
@@ -542,6 +571,9 @@
 (define-public wl_pointer:axis_source-enum
   '((wheel . 0) (finger . 1) (continuous . 2) (wheel_tilt . 3)))
 
+(define-public wl_pointer:axis_relative_direction-enum
+  '((identical . 0) (inverted . 1)))
+
 (define-public wl_keyboard:keymap_format-enum
   '((no_keymap . 0) (xkb_v1 . 1)))
 
@@ -560,7 +592,7 @@
   '((current . #x1) (preferred . #x2)))
 
 (define-public wl_subcompositor:error-enum
-  '((bad_surface . 0)))
+  '((bad_surface . 0) (bad_parent . 1)))
 
 (define-public wl_subsurface:error-enum
   '((bad_surface . 0)))
@@ -695,6 +727,17 @@
         (bytevector-u32-native-set! bv ix obj-id)
         (bytevector-u16-native-set! bv (+ ix 6) msg-size)
         (bytevector-u16-native-set! bv (+ ix 4) 0)
+        (values msg-size control)))))
+
+(define-public encode-wl_shm:release
+  (lambda (obj-id bv ix)
+    (define (encode-body) (values (+ ix 8) #f))
+    (call-with-values
+      encode-body
+      (lambda (msg-size control)
+        (bytevector-u32-native-set! bv ix obj-id)
+        (bytevector-u16-native-set! bv (+ ix 6) msg-size)
+        (bytevector-u16-native-set! bv (+ ix 4) 1)
         (values msg-size control)))))
 
 (define-public encode-wl_buffer:destroy

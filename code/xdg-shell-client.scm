@@ -11,7 +11,8 @@
     ;; xdg_surface
     ((configure . 0))
     ;; xdg_toplevel
-    ((configure . 0) (close . 1) (configure_bounds . 2))
+    ((configure . 0) (close . 1) (configure_bounds . 2) 
+     (wm_capabilities . 3))
     ;; xdg_popup
     ((configure . 0) (popup_done . 1) (repositioned . 2))))
 
@@ -46,7 +47,12 @@
       (let*-values
         (((width ix) (dec-s32 bv ix))
          ((height ix) (dec-s32 bv ix)))
-        (values obj-id width height))))
+        (values obj-id width height)))
+    (lambda (obj-id bv ix cm)
+      "event decoder for xdg_toplevel:wm_capabilities"
+      (let*-values
+        (((capabilities ix) (dec-array bv ix)))
+        (values obj-id capabilities))))
    (vector
     (lambda (obj-id bv ix cm)
       "event decoder for xdg_popup:configure"
@@ -67,7 +73,7 @@
 
 (define xdg-shell-handler-vec-list
   (list (make-vector 1 #f) (make-vector 0 #f) (make-vector 1 #f) 
-        (make-vector 3 #f) (make-vector 3 #f)))
+        (make-vector 4 #f) (make-vector 3 #f)))
 
 (add-iface-list xdg-shell-interface-list)
 (add-opcode-dict-list xdg-shell-event-opcode-dict-list)
@@ -77,7 +83,7 @@
 (define-public xdg_wm_base:error-enum
   '((role . 0) (defunct_surfaces . 1) (not_the_topmost_popup . 2) 
     (invalid_popup_parent . 3) (invalid_surface_state . 4) 
-    (invalid_positioner . 5)))
+    (invalid_positioner . 5) (unresponsive . 6)))
 
 (define-public xdg_positioner:error-enum
   '((invalid_input . 0)))
@@ -96,10 +102,11 @@
 
 (define-public xdg_surface:error-enum
   '((not_constructed . 1) (already_constructed . 2) 
-    (unconfigured_buffer . 3)))
+    (unconfigured_buffer . 3) (invalid_serial . 4) (invalid_size . 5) 
+    (defunct_role_object . 6)))
 
 (define-public xdg_toplevel:error-enum
-  '((invalid_resize_edge . 0)))
+  '((invalid_resize_edge . 0) (invalid_parent . 1) (invalid_size . 2)))
 
 (define-public xdg_toplevel:resize_edge-enum
   '((none . 0) (top . 1) (bottom . 2) (left . 4) (top_left . 5) 
@@ -107,7 +114,11 @@
 
 (define-public xdg_toplevel:state-enum
   '((maximized . 1) (fullscreen . 2) (resizing . 3) (activated . 4) 
-    (tiled_left . 5) (tiled_right . 6) (tiled_top . 7) (tiled_bottom . 8)))
+    (tiled_left . 5) (tiled_right . 6) (tiled_top . 7) (tiled_bottom . 8) 
+    (suspended . 9)))
+
+(define-public xdg_toplevel:wm_capabilities-enum
+  '((window_menu . 1) (maximize . 2) (fullscreen . 3) (minimize . 4)))
 
 (define-public xdg_popup:error-enum
   '((invalid_grab . 0)))
