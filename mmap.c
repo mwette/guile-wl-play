@@ -52,41 +52,22 @@ scm_atomic_compare_and_swap_uint32 (uint32_t *loc, uint32_t *expected,
   return atomic_compare_exchange_weak (a_loc, expected, desired);
 }
 
-struct mman_util {
-  char *mem;				/* pointer */
-  size_t off;				/* offset */
-  size_t len;				/* length */
-};
-
-static SCM fzr_htab;
+#include <errno.h>
 
 static void
 mmap_finalizer (void *ptr)
 {
-#if 1
-  fprintf(stderr, "mmap_finializer can't run becuase size is unknown\n");
-#elif 1
-  struct mman_util *util = ptr;
-
-  SCM_SYSCALL (rv = munmap(util->mem + util->off, util->len));
-  if (rv != 0)
-    scm_misc_error ("mmap", "failed to munmap memory", SCM_EOL);
-#else
-  SCM bvec;
-  void *c_addr;
-  size_t c_len;
+  size_t len;
   int rv;
 
-  bvec = SCM_PACK_POINTER (ptr);
-  if (!SCM_BYTEVECTOR_P (bvec))
-    scm_misc_error ("mmap", "expecting bytevector", SCM_EOL);
-
-  c_addr = SCM_BYTEVECTOR_CONTENTS (bvec);
-  c_len = SCM_BYTEVECTOR_LENGTH (bvec);
-  SCM_SYSCALL (rv = munmap(c_addr, c_len));
+  /* Guile's finalizer for scm_from_pointer only passes the pointer address,
+   * so we don't have the size.   However, only the region starting at the
+   * address is mapped, so if we include that it should all work out (we hope).
+   */
+  len = sizeof(void *);
+  SCM_SYSCALL (rv = munmap(ptr, len));
   if (rv != 0)
     scm_misc_error ("mmap", "failed to munmap memory", SCM_EOL);
-#endif
 }
 
 /* Code for scm_dynwind_acquire_port and release_port sourced from ports.c. */
@@ -175,7 +156,7 @@ scm_dynwind_acquire_port (SCM port)
 
 SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
             (SCM addr, SCM len, SCM prot, SCM flags, SCM file, SCM offset),
-	    "Create a memory mapping, returning a bytevector..  @var{addr},\n"
+	    "Create a memory mapping, returning a bytevector.  @var{addr},\n"
 	    "if non-zero, is the staring address; or, if zero, is assigned by\n"
 	    "the system.  @var{prot}, if provided, assigns protection.\n"
 	    "@var{file}, a port or fd, if provided associates the memory\n"
@@ -197,7 +178,6 @@ SCM_DEFINE (scm_mmap_search, "mmap/search", 2, 4, 0,
   int c_prot, c_flags, c_fd;
   scm_t_off c_offset;
   SCM pointer, bvec;
-  //struct mman_util *util;
 
   if (SCM_POINTER_P (addr))
     c_addr = SCM_POINTER_VALUE (addr);
@@ -382,8 +362,6 @@ scm_init_mmap(void) {
 #endif
   
   scm_c_define_gsubr (s_scm_mmap, 2, 4, 0, (scm_t_subr) scm_mmap);
-
-  fzr_htab = scm_c_make_hash_table (23);
 }
 
 /* --- last line --- */
