@@ -25,9 +25,12 @@ requires [guile-fibers](https://github.com/wingo/fibers) and libcairo
 | sockmsg.c | sendmsg and recvmsg! along with bytevector->cmsg-list cmsg-list->bytevector |
 | mmap.c | mmap |
 | wl-client.scm | support code |
-| scanne | wayland client protocol code generator |
-| code/*.scm | generated code |
-| demo/ | old demo programs |
-| demoN | latest demo |
+| scanner | wayland client protocol code generator |
+| code/*.scm | generated protocol code |
+| demo.old | old demo programs |
+| demo | latest demo |
+| ffi | FFI code for cairo |
+| nyacc | support for ffi/cairo.scm from mwette/nyacc |
 
-I'm running on Ubuntu 22.10, which uses wayland by default (over X11)
+Last run on Ubuntu 25.04, which uses wayland by default (over X11)
+

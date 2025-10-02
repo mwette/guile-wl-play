@@ -932,7 +932,7 @@ exec $GDB_PFX guile $0 "$@"
 
 ;; move starts with xdg_toplevel:move
 
-(use-modules (ffi ffi-help-rt))
+(use-modules (nyacc foreign cdata))
 (use-modules (ffi cairo))
 
 (define appl-ctx #f)
@@ -985,20 +985,20 @@ exec $GDB_PFX guile $0 "$@"
            (slant 'CAIRO_FONT_SLANT_NORMAL)
            (weight 'CAIRO_FONT_WEIGHT_NORMAL)
            (ftsize 20.0)
-           (extents (make-cairo_text_extents_t))
+           (extents (make-cdata cairo_text_extents_t))
            (wid/2 (/ wid 2.0))
            (bar/2 (/ bar 2.0))
            )
       (cairo_select_font_face cr face slant weight)
       (cairo_set_font_size cr ftsize)
-      (cairo_text_extents cr title (pointer-to extents))
+      (cairo_text_extents cr title (cdata& extents))
       ;; bearing is vector from start of text on baseline
       ;; to upper left corner of bounding box
       (cairo_move_to cr
-                     (+ wid/2 (fh-object-ref extents 'x_bearing)
-                        (- (/ (fh-object-ref extents 'width) 2.0)))
+                     (+ wid/2 (cdata-ref extents 'x_bearing)
+                        (- (/ (cdata-ref extents 'width) 2.0)))
                      (+ bar/2
-                        (/ (fh-object-ref extents 'height) 2.0)))
+                        (/ (cdata-ref extents 'height) 2.0)))
       (cairo_show_text cr title))
     ;;
     (cairo_restore cr)))
@@ -1009,10 +1009,10 @@ exec $GDB_PFX guile $0 "$@"
   (let ((face "monospace")
         (slant 'CAIRO_FONT_SLANT_NORMAL)
         (weight 'CAIRO_FONT_WEIGHT_NORMAL)
-        (extents (make-cairo_font_extents_t)))
+        (extents (make-cdata cairo_font_extents_t)))
     (cairo_select_font_face cr face slant weight)
     (cairo_set_font_size cr 16.0)
-    (cairo_font_extents cr (pointer-to extents))
+    (cairo_font_extents cr (cdata& extents))
     extents))
 
 (define (appl-init width height format)
@@ -1040,10 +1040,10 @@ exec $GDB_PFX guile $0 "$@"
                               buffer format width height stride)))
                    (cairo_create srf)))
          (extents (init-cr-txt dpy-cr))
-         (ft-asc (fh-object-ref extents 'ascent))
-         (ft-dsc (fh-object-ref extents 'descent))
-         (ft-hei (fh-object-ref extents 'height))
-         (ft-wid (fh-object-ref extents 'max_x_advance))
+         (ft-asc (cdata-ref extents 'ascent))
+         (ft-dsc (cdata-ref extents 'descent))
+         (ft-hei (cdata-ref extents 'height))
+         (ft-wid (cdata-ref extents 'max_x_advance))
          (ctx (make-ctx port bv
                         width height format
                         smp-id srf-id xrf-id top-id
@@ -1123,7 +1123,8 @@ exec $GDB_PFX guile $0 "$@"
       (cairo_save cr)
       (let* ((x 100.0) (y 100.0) (wid 50.0) (hei 50.0)
              (sz (min wid hei))
-             (radius 0.3) (dashes (make-double (/ (* radius M_PI) 3.0))))
+             (radius 0.3)
+             (dashes (make-cdata (cbase 'double) (/ (* radius M_PI) 3.0))))
         (set! rot (+ rot 0.175))
         (cairo_translate cr x y)
         (cairo_scale cr sz sz)
@@ -1139,7 +1140,7 @@ exec $GDB_PFX guile $0 "$@"
         (cairo_arc cr 0.0 0.0 0.1 (- M_PI)  M_PI)
         (cairo_fill cr)
         (cairo_set_line_width cr radius)
-        (cairo_set_dash cr (pointer-to dashes) 1 0.0)
+        (cairo_set_dash cr (cdata& dashes) 1 0.0)
         (cairo_arc cr 0.0 0.0 radius (- M_PI) M_PI)
         (cairo_stroke cr)
         )
